@@ -1,0 +1,599 @@
+---
+title: CLI-Based AI Integration
+description: Why Jenkins Job Insight uses AI CLI tools instead of SDKs
+---
+
+## Design Philosophy
+
+**CLAUDE.md:37-45** — Architectural decision:
+
+> This project uses AI CLI tools (Claude CLI, Gemini CLI, Cursor Agent CLI) instead of direct SDK integrations:
+>
+> - **No SDK dependencies**: AI providers are called via subprocess
+> - **Provider-agnostic**: Easy to add new AI CLIs (see README)
+> - **Auth handled externally**: CLIs manage their own authentication
+> - **Environment-driven**: `AI_PROVIDER` env var selects the provider (`claude`, `gemini`, or `cursor`)
+
+Instead of importing `anthropic`, `google-generativeai`, or other AI SDKs, Jenkins Job Insight **shells out** to CLI binaries.
+
+## Why CLI Over SDK?
+
+### 1. No Dependency Hell
+
+**SDK approach:**
+```python
+# requirements.txt
+anthropic==0.25.0
+google-generativeai==0.6.0
+openai==1.30.0
+# ... plus all their transitive dependencies
+# ... version conflicts, security updates, breaking changes
+```
+
+**CLI approach:**
+```python
+# requirements.txt
+# (no AI SDK dependencies)
+```
+
+Dependencies are **user-managed**. Install only the CLI you need:
+
+```bash
+pip install claude-cli    # If using Claude
+pip install gemini-cli    # If using Gemini
+cargo install cursor-cli  # If using Cursor
+```
+
+### 2. Provider Agnostic
+
+**analyzer.py:101-134** — Provider configuration:
+
+```python
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Configuration for an AI CLI provider."""
+    binary: str
+    build_cmd: Callable[[str, str, Path | None], list[str]]
+    uses_own_cwd: bool = False
+
+def _build_claude_cmd(binary: str, model: str, _cwd: Path | None) -> list[str]:
+    return [binary, "--model", model, "--dangerously-skip-permissions", "-p"]
+
+def _build_gemini_cmd(binary: str, model: str, _cwd: Path | None) -> list[str]:
+    return [binary, "--model", model, "--yolo"]
+
+def _build_cursor_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    cmd = [binary, "--force", "--model", model, "--print"]
+    if cwd:
+        cmd.extend(["--workspace", str(cwd)])
+    return cmd
+
+PROVIDER_CONFIG: dict[str, ProviderConfig] = {
+    "claude": ProviderConfig(binary="claude", build_cmd=_build_claude_cmd),
+    "gemini": ProviderConfig(binary="gemini", build_cmd=_build_gemini_cmd),
+    "cursor": ProviderConfig(
+        binary="agent", uses_own_cwd=True, build_cmd=_build_cursor_cmd
+    ),
+}
+
+VALID_AI_PROVIDERS = set(PROVIDER_CONFIG.keys())
+```
+
+**Adding a new provider** is trivial:
+
+1. Define a `build_cmd` function
+2. Add entry to `PROVIDER_CONFIG`
+3. Done — no imports, no SDK integration
+
+### 3. Authentication Externalized
+
+AI CLIs handle their own auth:
+
+- Claude CLI → `~/.claude/config.json`
+- Gemini CLI → Google Cloud credentials
+- Cursor Agent CLI → Cursor IDE session
+
+Jenkins Job Insight **never sees API keys**. No key rotation, no credential management, no secrets in environment variables.
+
+### 4. Code Context Support
+
+Many AI CLIs can **read local files** when given a working directory:
+
+**analyzer.py:514-517** (in `call_ai_cli()`):
+```python
+config = PROVIDER_CONFIG.get(ai_provider)
+cmd = config.build_cmd(config.binary, ai_model, cwd)
+
+subprocess_cwd = None if config.uses_own_cwd else cwd
+```
+
+- **Claude/Gemini**: Use subprocess `cwd` parameter
+- **Cursor**: Uses `--workspace` flag (`uses_own_cwd=True`)
+
+The AI can explore test files, understand code context, and provide better analysis — **without sending entire repos over HTTP**.
+
+<Info>
+This is the core reason for CLI-based design: AI CLIs have **native filesystem access** to cloned repositories.
+</Info>
+
+## How PROVIDER_CONFIG Works
+
+### ProviderConfig Dataclass
+
+**analyzer.py:101-108**:
+
+```python
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Configuration for an AI CLI provider."""
+    binary: str
+    build_cmd: Callable[[str, str, Path | None], list[str]]
+    uses_own_cwd: bool = False
+```
+
+**Fields:**
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `binary` | `str` | CLI executable name (e.g., `"claude"`) |
+| `build_cmd` | `Callable` | Function to construct CLI arguments |
+| `uses_own_cwd` | `bool` | If True, provider handles cwd via flags |
+
+### Command Building Functions
+
+Each function signature:
+```python
+def build_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    ...
+```
+
+**Claude example:**
+```python
+def _build_claude_cmd(binary: str, model: str, _cwd: Path | None) -> list[str]:
+    return [binary, "--model", model, "--dangerously-skip-permissions", "-p"]
+```
+
+Builds command:
+```bash
+claude --model claude-sonnet-4 --dangerously-skip-permissions -p
+```
+
+Flags:
+- `--model` — Model selection
+- `--dangerously-skip-permissions` — Don't prompt for confirmation
+- `-p` — Prompt mode (reads from stdin)
+
+**Cursor example:**
+```python
+def _build_cursor_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    cmd = [binary, "--force", "--model", model, "--print"]
+    if cwd:
+        cmd.extend(["--workspace", str(cwd)])
+    return cmd
+```
+
+Builds command:
+```bash
+agent --force --model cursor-small --print --workspace /tmp/repo
+```
+
+Cursor agent doesn't use subprocess `cwd`, it uses `--workspace` flag instead.
+
+### Configuration Dictionary
+
+**analyzer.py:125-132**:
+
+```python
+PROVIDER_CONFIG: dict[str, ProviderConfig] = {
+    "claude": ProviderConfig(binary="claude", build_cmd=_build_claude_cmd),
+    "gemini": ProviderConfig(binary="gemini", build_cmd=_build_gemini_cmd),
+    "cursor": ProviderConfig(
+        binary="agent", uses_own_cwd=True, build_cmd=_build_cursor_cmd
+    ),
+}
+```
+
+**Lookup:**
+```python
+config = PROVIDER_CONFIG.get(ai_provider)  # ai_provider = "claude"
+# config.binary = "claude"
+# config.build_cmd = _build_claude_cmd
+# config.uses_own_cwd = False
+```
+
+## The call_ai_cli() Function
+
+**analyzer.py:481-545** — Single function for all AI CLI calls:
+
+```python
+async def call_ai_cli(
+    prompt: str,
+    cwd: Path | None = None,
+    ai_provider: str = "",
+    ai_model: str = "",
+    ai_cli_timeout: int | None = None,
+) -> tuple[bool, str]:
+    """Call AI CLI (Claude, Gemini, or Cursor) with given prompt."""
+    config = PROVIDER_CONFIG.get(ai_provider)
+    if not config:
+        return (
+            False,
+            f"Unknown AI provider: '{ai_provider}'. Valid providers: {', '.join(sorted(VALID_AI_PROVIDERS))}",
+        )
+
+    if not ai_model:
+        return (
+            False,
+            "No AI model configured. Set AI_MODEL env var or pass ai_model in request body.",
+        )
+
+    provider_info = f"{ai_provider.upper()} ({ai_model})"
+    cmd = config.build_cmd(config.binary, ai_model, cwd)
+
+    subprocess_cwd = None if config.uses_own_cwd else cwd
+
+    effective_timeout = ai_cli_timeout or AI_CLI_TIMEOUT
+    timeout = effective_timeout * 60  # Convert minutes to seconds
+
+    logger.info("Calling %s CLI", provider_info)
+
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            cwd=subprocess_cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            input=prompt,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            False,
+            f"{provider_info} CLI error: Analysis timed out after {effective_timeout} minutes",
+        )
+
+    if result.returncode != 0:
+        error_detail = result.stderr or result.stdout or "unknown error (no output)"
+        return False, f"{provider_info} CLI error: {error_detail}"
+
+    logger.debug(f"{provider_info} CLI response length: {len(result.stdout)} chars")
+    return True, result.stdout
+```
+
+### Key Design Points
+
+**1. Provider validation** (analyzer.py:500-505):
+```python
+config = PROVIDER_CONFIG.get(ai_provider)
+if not config:
+    return (
+        False,
+        f"Unknown AI provider: '{ai_provider}'. Valid providers: {', '.join(sorted(VALID_AI_PROVIDERS))}",
+    )
+```
+
+**2. Command construction** (analyzer.py:514):
+```python
+cmd = config.build_cmd(config.binary, ai_model, cwd)
+```
+
+**3. Working directory handling** (analyzer.py:516):
+```python
+subprocess_cwd = None if config.uses_own_cwd else cwd
+```
+
+- If `uses_own_cwd=True` (Cursor): `subprocess_cwd = None`, cwd passed via `--workspace`
+- Otherwise: `subprocess_cwd = cwd`, subprocess inherits directory
+
+**4. Async subprocess** (analyzer.py:524-532):
+```python
+result = await asyncio.to_thread(
+    subprocess.run,
+    cmd,
+    cwd=subprocess_cwd,
+    capture_output=True,
+    text=True,
+    timeout=timeout,
+    input=prompt,
+)
+```
+
+`asyncio.to_thread` runs blocking `subprocess.run` in thread pool, keeping async event loop responsive.
+
+**5. Error handling** (analyzer.py:533-541):
+```python
+except subprocess.TimeoutExpired:
+    return (
+        False,
+        f"{provider_info} CLI error: Analysis timed out after {effective_timeout} minutes",
+    )
+
+if result.returncode != 0:
+    error_detail = result.stderr or result.stdout or "unknown error (no output)"
+    return False, f"{provider_info} CLI error: {error_detail}"
+```
+
+Timeouts and non-zero exits are **gracefully handled**, not raised as exceptions.
+
+**6. Success path** (analyzer.py:543-544):
+```python
+logger.debug(f"{provider_info} CLI response length: {len(result.stdout)} chars")
+return True, result.stdout
+```
+
+Returns `(True, stdout)` for successful calls.
+
+## Sanity Check: AI CLI Availability
+
+**analyzer.py:426-479** — `check_ai_cli_available()`:
+
+Before spawning parallel analysis tasks, a **preflight check** ensures the AI CLI is reachable:
+
+```python
+async def check_ai_cli_available(ai_provider: str, ai_model: str) -> tuple[bool, str]:
+    """Run a lightweight sanity check to verify the AI CLI is reachable.
+
+    Sends a trivial prompt ("Hi") to the configured provider and returns
+    whether the CLI responded successfully.  This should be called once
+    before spawning parallel analysis tasks so that a misconfigured
+    provider is caught early without wasting API credits.
+    """
+    config = PROVIDER_CONFIG.get(ai_provider)
+    if not config:
+        return (
+            False,
+            f"Unknown AI provider: '{ai_provider}'. Valid providers: {', '.join(sorted(VALID_AI_PROVIDERS))}",
+        )
+
+    if not ai_model:
+        return (
+            False,
+            "No AI model configured. Set AI_MODEL env var or pass ai_model in request body.",
+        )
+
+    provider_info = f"{ai_provider.upper()} ({ai_model})"
+    sanity_cmd = config.build_cmd(config.binary, ai_model, None)
+
+    try:
+        sanity_result = await asyncio.to_thread(
+            subprocess.run,
+            sanity_cmd,
+            cwd=None,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            input="Hi",
+        )
+        if sanity_result.returncode != 0:
+            error_detail = (
+                sanity_result.stderr
+                or sanity_result.stdout
+                or "unknown error (no output)"
+            )
+            return False, f"{provider_info} sanity check failed: {error_detail}"
+    except subprocess.TimeoutExpired:
+        return False, f"{provider_info} sanity check timed out"
+
+    return True, ""
+```
+
+**Usage in analyzer.py:1199-1211**:
+
+```python
+# Pre-flight: verify AI CLI is reachable before spawning parallel tasks
+ok, err = await check_ai_cli_available(ai_provider, ai_model)
+if not ok:
+    return AnalysisResult(
+        job_id=job_id,
+        job_name=request.job_name,
+        build_number=request.build_number,
+        jenkins_url=HttpUrl(jenkins_build_url),
+        status="failed",
+        summary=err,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        failures=[],
+    )
+```
+
+Benefits:
+- **Fail fast** — Don't start analysis if AI is unreachable
+- **Clear errors** — "Claude CLI not found" vs. cryptic subprocess errors
+- **No wasted work** — Avoids fetching Jenkins data if AI is broken
+
+<Note>
+The sanity check sends a minimal prompt ("Hi") with a 60-second timeout. This is much faster than discovering a misconfiguration after fetching build data and cloning repos.
+</Note>
+
+## Configuration: AI_PROVIDER and AI_MODEL
+
+### Environment Variables
+
+**main.py:64-65**:
+```python
+AI_PROVIDER = os.getenv("AI_PROVIDER", "").lower()
+AI_MODEL = os.getenv("AI_MODEL", "")
+```
+
+Example:
+```bash
+export AI_PROVIDER=claude
+export AI_MODEL=claude-sonnet-4
+```
+
+### Per-Request Override
+
+**main.py:161-189** — `_resolve_ai_config_values()`:
+
+```python
+def _resolve_ai_config_values(
+    ai_provider: str | None, ai_model: str | None
+) -> tuple[str, str]:
+    """Resolve and validate AI provider and model from given values or env defaults."""
+    provider = ai_provider or AI_PROVIDER
+    model = ai_model or AI_MODEL
+    if not provider:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No AI provider configured. Set AI_PROVIDER env var or pass ai_provider in request body. Valid providers: {', '.join(sorted(VALID_AI_PROVIDERS))}",
+        )
+    if not model:
+        raise HTTPException(
+            status_code=400,
+            detail="No AI model configured. Set AI_MODEL env var or pass ai_model in request body.",
+        )
+    return provider, model
+```
+
+Request body:
+```json
+{
+  "job_name": "my-job",
+  "build_number": 123,
+  "ai_provider": "gemini",
+  "ai_model": "gemini-2.0-flash-exp"
+}
+```
+
+Overrides environment variables for this request only.
+
+### Timeout Configuration
+
+**analyzer.py:38-52** — `_get_ai_cli_timeout()`:
+
+```python
+def _get_ai_cli_timeout() -> int:
+    """Parse AI_CLI_TIMEOUT with fallback for invalid values."""
+    raw = os.getenv("AI_CLI_TIMEOUT", "10")
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(f"Invalid AI_CLI_TIMEOUT={raw}; defaulting to 10")
+        return 10
+    if value <= 0:
+        logger.warning(f"Non-positive AI_CLI_TIMEOUT={raw}; defaulting to 10")
+        return 10
+    return value
+
+AI_CLI_TIMEOUT = _get_ai_cli_timeout()  # minutes
+```
+
+Default: **10 minutes** per AI CLI call.
+
+Can be overridden via:
+- `AI_CLI_TIMEOUT` environment variable
+- `ai_cli_timeout` request field (passed to `call_ai_cli()`)
+
+## Example: Analyzing with Claude
+
+### Request
+
+```bash
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "test-suite",
+    "build_number": 456,
+    "ai_provider": "claude",
+    "ai_model": "claude-sonnet-4",
+    "tests_repo_url": "https://github.com/user/tests.git"
+  }'
+```
+
+### Internal Flow
+
+1. **Repository cloned** to `/tmp/repo_abc123/`
+2. **Sanity check** runs:
+   ```bash
+   claude --model claude-sonnet-4 --dangerously-skip-permissions -p
+   (stdin: "Hi")
+   ```
+3. **Failures grouped** — e.g., 20 failures → 5 unique signatures
+4. **Parallel analysis** — 5 concurrent calls:
+   ```bash
+   cd /tmp/repo_abc123/
+   claude --model claude-sonnet-4 --dangerously-skip-permissions -p
+   (stdin: "Analyze this test failure...\n\nERROR: ConnectionRefused...")
+   ```
+5. **Claude explores** test files in `/tmp/repo_abc123/`
+6. **Response parsed** — JSON extraction (analyzer.py:179-223)
+7. **Results returned** — All 20 failures with analysis attached
+
+## Example: Analyzing with Cursor
+
+### Request
+
+```bash
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "integration-tests",
+    "build_number": 789,
+    "ai_provider": "cursor",
+    "ai_model": "cursor-small",
+    "tests_repo_url": "https://github.com/user/app.git"
+  }'
+```
+
+### Internal Flow
+
+1. **Repository cloned** to `/tmp/repo_xyz789/`
+2. **Sanity check** runs:
+   ```bash
+   agent --force --model cursor-small --print
+   (stdin: "Hi")
+   ```
+3. **Failures analyzed** with workspace flag:
+   ```bash
+   agent --force --model cursor-small --print --workspace /tmp/repo_xyz789/
+   (stdin: "Analyze this test failure...")
+   ```
+4. **Cursor agent** reads files from `/tmp/repo_xyz789/` via `--workspace`
+5. **No subprocess cwd** — `uses_own_cwd=True` prevents `cwd` parameter
+
+<Info>
+Cursor agent uses `--workspace` instead of subprocess `cwd` because it may spawn background processes that need stable paths.
+</Info>
+
+## Advantages Recap
+
+| Aspect | CLI Approach | SDK Approach |
+|--------|--------------|---------------|
+| **Dependencies** | None (user-managed) | Multiple SDKs + transitive deps |
+| **Adding providers** | Config dict entry | Import SDK, write integration |
+| **Authentication** | CLI handles it | API keys in env vars |
+| **Code context** | Filesystem access | Upload files or send content |
+| **Version conflicts** | Impossible | Common (SDK version pinning) |
+| **Security** | Keys never in app | Keys in environment/config |
+
+## Trade-offs
+
+### Disadvantages
+
+1. **Subprocess overhead** — Spawning processes is slower than SDK function calls
+   - Mitigated by: Parallel execution, deduplication
+2. **CLI must be installed** — Users must `pip install claude-cli` separately
+   - Mitigated by: Clear error messages, installation docs
+3. **Response parsing** — CLI output is text, not structured
+   - Mitigated by: Robust JSON parsing with fallback (analyzer.py:179-326)
+4. **Less control** — Can't customize SDK behavior (retries, streaming)
+   - Accepted trade-off: CLI simplicity > SDK customization
+
+### Why Trade-offs Are Acceptable
+
+- **Not latency-sensitive** — Analysis takes minutes, subprocess startup is negligible
+- **Installation is one-time** — Once installed, CLI just works
+- **JSON parsing is robust** — Multi-strategy extraction handles malformed output
+- **Simplicity wins** — Zero SDK dependencies > fine-grained control
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="Failure Deduplication" icon="layer-group" href="/architecture/failure-deduplication">
+    How grouping minimizes AI CLI calls
+  </Card>
+  <Card title="System Architecture" icon="diagram-project" href="/architecture/overview">
+    Full data flow and component interaction
+  </Card>
+</CardGroup>

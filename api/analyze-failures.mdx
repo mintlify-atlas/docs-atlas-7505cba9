@@ -1,0 +1,320 @@
+---
+title: 'POST /analyze-failures'
+description: 'Analyze raw test failures directly without Jenkins'
+---
+
+Analyze test failures directly from raw data or JUnit XML without connecting to Jenkins. Always runs synchronously.
+
+## Endpoint
+
+```
+POST /analyze-failures
+```
+
+## Request Body
+
+Provide **either** `failures` or `raw_xml`, but not both.
+
+<ParamField body="failures" type="array">
+  Array of test failure objects. Mutually exclusive with `raw_xml`.
+  
+  <Expandable title="TestFailure object">
+    <ParamField body="test_name" type="string" required>
+      Fully qualified test name (e.g., `className.methodName`).
+    </ParamField>
+    
+    <ParamField body="error_message" type="string">
+      Error details/message. Defaults to empty string.
+    </ParamField>
+    
+    <ParamField body="stack_trace" type="string">
+      Full stack trace if available. Defaults to empty string.
+    </ParamField>
+    
+    <ParamField body="duration" type="number">
+      Test duration in seconds. Defaults to 0.0.
+    </ParamField>
+    
+    <ParamField body="status" type="string">
+      Test status. Defaults to `"FAILED"`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="raw_xml" type="string">
+  Raw JUnit XML content to extract failures from and enrich with analysis results. Mutually exclusive with `failures`. Maximum length: 50MB.
+  
+  When provided:
+  - Failures are extracted from the XML
+  - Analysis is performed
+  - Response includes `enriched_xml` with analysis results embedded
+</ParamField>
+
+<ParamField body="tests_repo_url" type="string (URL)">
+  URL of the tests repository for code context. Overrides `TESTS_REPO_URL` env var.
+</ParamField>
+
+<ParamField body="ai_provider" type="string">
+  AI provider to use: `claude`, `gemini`, or `cursor`. Overrides `AI_PROVIDER` env var.
+</ParamField>
+
+<ParamField body="ai_model" type="string">
+  AI model to use. Overrides `AI_MODEL` env var.
+</ParamField>
+
+<ParamField body="ai_cli_timeout" type="integer">
+  AI CLI timeout in minutes. Must be greater than 0. Overrides `AI_CLI_TIMEOUT` env var.
+</ParamField>
+
+<ParamField body="enable_jira" type="boolean">
+  Enable Jira bug search for PRODUCT BUG failures. Defaults to `true` when Jira is configured.
+</ParamField>
+
+<ParamField body="jira_url" type="string">
+  Jira instance URL. Overrides `JIRA_URL` env var.
+</ParamField>
+
+<ParamField body="jira_email" type="string">
+  Jira Cloud email for authentication. Overrides `JIRA_EMAIL` env var.
+</ParamField>
+
+<ParamField body="jira_api_token" type="string">
+  Jira Cloud API token. Overrides `JIRA_API_TOKEN` env var.
+</ParamField>
+
+<ParamField body="jira_pat" type="string">
+  Jira Server/DC personal access token. Overrides `JIRA_PAT` env var.
+</ParamField>
+
+<ParamField body="jira_project_key" type="string">
+  Jira project key to scope searches. Overrides `JIRA_PROJECT_KEY` env var.
+</ParamField>
+
+<ParamField body="jira_ssl_verify" type="boolean">
+  Enable/disable SSL verification for Jira. Overrides `JIRA_SSL_VERIFY` env var.
+</ParamField>
+
+<ParamField body="jira_max_results" type="integer">
+  Maximum Jira search results. Must be greater than 0. Overrides `JIRA_MAX_RESULTS` env var.
+</ParamField>
+
+## Response (200 OK)
+
+<ResponseField name="job_id" type="string">
+  Unique identifier for the analysis.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Analysis status: `"completed"` or `"failed"`.
+</ResponseField>
+
+<ResponseField name="summary" type="string">
+  Summary of analysis findings.
+</ResponseField>
+
+<ResponseField name="ai_provider" type="string">
+  AI provider used for analysis.
+</ResponseField>
+
+<ResponseField name="ai_model" type="string">
+  AI model used for analysis.
+</ResponseField>
+
+<ResponseField name="failures" type="array">
+  Array of FailureAnalysis objects. See [Response Models](/api/models/responses) for detailed structure.
+</ResponseField>
+
+<ResponseField name="enriched_xml" type="string">
+  Enriched JUnit XML with analysis results embedded. Only present when `raw_xml` was provided in the request.
+  
+  The enriched XML includes:
+  - `<analysis>` elements within `<testcase>` tags
+  - Classification (CODE ISSUE / PRODUCT BUG)
+  - Detailed analysis text
+  - Code fix suggestions or bug reports
+  - Link to HTML report
+</ResponseField>
+
+<ResponseField name="base_url" type="string">
+  Base URL of the service.
+</ResponseField>
+
+<ResponseField name="result_url" type="string">
+  Full URL to retrieve this result.
+</ResponseField>
+
+<ResponseField name="html_report_url" type="string">
+  Full URL to view HTML report.
+</ResponseField>
+
+## Examples
+
+### Analyze Raw Failures
+
+```bash
+curl -X POST https://your-instance.com/analyze-failures \
+  -H "Content-Type: application/json" \
+  -d '{
+    "failures": [
+      {
+        "test_name": "com.example.LoginTest.testInvalidPassword",
+        "error_message": "AssertionError: Expected 401, got 500",
+        "stack_trace": "at com.example.LoginTest.testInvalidPassword(LoginTest.java:42)",
+        "duration": 0.123,
+        "status": "FAILED"
+      }
+    ],
+    "ai_provider": "claude",
+    "ai_model": "claude-opus-4-20250514"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "job_id": "a1b2c3d4-e5f6-4789-a0b1-c2d3e4f5a6b7",
+  "status": "completed",
+  "summary": "Analyzed 1 test failures (1 unique errors). 1 analyzed successfully.",
+  "ai_provider": "claude",
+  "ai_model": "claude-opus-4-20250514",
+  "failures": [
+    {
+      "test_name": "com.example.LoginTest.testInvalidPassword",
+      "error": "AssertionError: Expected 401, got 500",
+      "analysis": {
+        "classification": "PRODUCT BUG",
+        "affected_tests": ["com.example.LoginTest.testInvalidPassword"],
+        "details": "The login endpoint is returning 500 Internal Server Error instead of 401 Unauthorized for invalid credentials.",
+        "product_bug_report": {
+          "title": "Login endpoint returns 500 instead of 401 for invalid password",
+          "severity": "high",
+          "component": "Authentication API",
+          "description": "When providing an invalid password, the /login endpoint crashes with a 500 error instead of gracefully returning 401.",
+          "evidence": "Expected 401, got 500",
+          "jira_search_keywords": ["login", "authentication", "500 error", "invalid password"],
+          "jira_matches": []
+        }
+      }
+    }
+  ],
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/a1b2c3d4-e5f6-4789-a0b1-c2d3e4f5a6b7",
+  "html_report_url": "https://your-instance.com/results/a1b2c3d4-e5f6-4789-a0b1-c2d3e4f5a6b7.html"
+}
+```
+
+### Analyze JUnit XML
+
+```bash
+curl -X POST https://your-instance.com/analyze-failures \
+  -H "Content-Type: application/json" \
+  -d '{
+    "raw_xml": "<?xml version=\"1.0\"?>\n<testsuite name=\"MyTests\" tests=\"1\" failures=\"1\">\n  <testcase name=\"testExample\" classname=\"com.example.Test\">\n    <failure message=\"assertion failed\">...</failure>\n  </testcase>\n</testsuite>",
+    "ai_provider": "gemini",
+    "ai_model": "gemini-2.0-flash-exp"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "job_id": "b2c3d4e5-f6a7-5890-b1c2-d3e4f5a6b7c8",
+  "status": "completed",
+  "summary": "Analyzed 1 test failures (1 unique errors). 1 analyzed successfully.",
+  "ai_provider": "gemini",
+  "ai_model": "gemini-2.0-flash-exp",
+  "failures": [
+    {
+      "test_name": "com.example.Test.testExample",
+      "error": "assertion failed",
+      "analysis": {
+        "classification": "CODE ISSUE",
+        "affected_tests": ["com.example.Test.testExample"],
+        "details": "Test assertion needs updating.",
+        "code_fix": {
+          "file": "src/test/java/com/example/Test.java",
+          "line": "25",
+          "change": "Update expected value"
+        }
+      }
+    }
+  ],
+  "enriched_xml": "<?xml version=\"1.0\"?>\n<testsuite name=\"MyTests\" tests=\"1\" failures=\"1\">\n  <testcase name=\"testExample\" classname=\"com.example.Test\">\n    <failure message=\"assertion failed\">...</failure>\n    <analysis classification=\"CODE ISSUE\">\n      Test assertion needs updating.\n      Fix: src/test/java/com/example/Test.java:25 - Update expected value\n      Report: https://your-instance.com/results/b2c3d4e5-f6a7-5890-b1c2-d3e4f5a6b7c8.html\n    </analysis>\n  </testcase>\n</testsuite>",
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/b2c3d4e5-f6a7-5890-b1c2-d3e4f5a6b7c8",
+  "html_report_url": "https://your-instance.com/results/b2c3d4e5-f6a7-5890-b1c2-d3e4f5a6b7c8.html"
+}
+```
+
+### No Failures in XML
+
+```bash
+curl -X POST https://your-instance.com/analyze-failures \
+  -H "Content-Type: application/json" \
+  -d '{
+    "raw_xml": "<?xml version=\"1.0\"?>\n<testsuite name=\"MyTests\" tests=\"1\" failures=\"0\">\n  <testcase name=\"testPass\" classname=\"com.example.Test\" />\n</testsuite>"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "job_id": "c3d4e5f6-a7b8-6901-c2d3-e4f5a6b7c8d9",
+  "status": "completed",
+  "summary": "No test failures found in the provided XML.",
+  "enriched_xml": "<?xml version=\"1.0\"?>\n<testsuite name=\"MyTests\" tests=\"1\" failures=\"0\">\n  <testcase name=\"testPass\" classname=\"com.example.Test\" />\n</testsuite>",
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/c3d4e5f6-a7b8-6901-c2d3-e4f5a6b7c8d9",
+  "html_report_url": "https://your-instance.com/results/c3d4e5f6-a7b8-6901-c2d3-e4f5a6b7c8d9.html"
+}
+```
+
+## Error Responses
+
+### Missing Input
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "Either 'failures' or 'raw_xml' must be provided"
+}
+```
+
+### Both Inputs Provided
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "Provide either 'failures' or 'raw_xml', not both"
+}
+```
+
+### Invalid XML
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "Invalid XML: mismatched tag: line 3, column 2"
+}
+```
+
+### Missing AI Configuration
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "No AI provider configured. Set AI_PROVIDER env var or pass ai_provider in request body. Valid providers: claude, cursor, gemini"
+}
+```
+
+## See Also
+
+- [POST /analyze](/api/analyze) - Analyze Jenkins job builds
+- [GET /results/{job_id}](/api/results) - Retrieve analysis results

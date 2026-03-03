@@ -1,0 +1,448 @@
+---
+title: 'POST /analyze'
+description: 'Submit a Jenkins job for failure analysis'
+---
+
+Submit a Jenkins job build for AI-powered failure analysis. Supports both async (default) and sync modes.
+
+## Endpoint
+
+```
+POST /analyze
+```
+
+## Modes
+
+### Async Mode (Default)
+
+Returns immediately with a `job_id` for polling or callback delivery.
+
+**Status Code:** `202 Accepted`
+
+### Sync Mode
+
+Blocks until analysis completes and returns the full result.
+
+**Status Code:** `200 OK`
+
+**Query Parameter:** `?sync=true`
+
+## Request Body
+
+<ParamField body="job_name" type="string" required>
+  Jenkins job name. Can include folders like `folder/subfolder/job-name`.
+</ParamField>
+
+<ParamField body="build_number" type="integer" required>
+  Build number to analyze.
+</ParamField>
+
+<ParamField body="callback_url" type="string (URL)">
+  Optional callback URL for async results delivery. Overrides `CALLBACK_URL` env var.
+</ParamField>
+
+<ParamField body="callback_headers" type="object">
+  Optional headers to include in callback request. Overrides `CALLBACK_HEADERS` env var.
+  
+  Example: `{"Authorization": "Bearer token123"}`
+</ParamField>
+
+<ParamField body="jenkins_url" type="string">
+  Jenkins server URL. Overrides `JENKINS_URL` env var.
+</ParamField>
+
+<ParamField body="jenkins_user" type="string">
+  Jenkins username. Overrides `JENKINS_USER` env var.
+</ParamField>
+
+<ParamField body="jenkins_password" type="string">
+  Jenkins password or API token. Overrides `JENKINS_PASSWORD` env var.
+</ParamField>
+
+<ParamField body="jenkins_ssl_verify" type="boolean">
+  Enable/disable SSL verification for Jenkins. Overrides `JENKINS_SSL_VERIFY` env var.
+</ParamField>
+
+<ParamField body="tests_repo_url" type="string (URL)">
+  URL of the tests repository for code context. Overrides `TESTS_REPO_URL` env var.
+</ParamField>
+
+<ParamField body="ai_provider" type="string">
+  AI provider to use: `claude`, `gemini`, or `cursor`. Overrides `AI_PROVIDER` env var.
+</ParamField>
+
+<ParamField body="ai_model" type="string">
+  AI model to use. Overrides `AI_MODEL` env var.
+  
+  Examples: `claude-opus-4-20250514`, `gemini-2.0-flash-exp`
+</ParamField>
+
+<ParamField body="ai_cli_timeout" type="integer">
+  AI CLI timeout in minutes. Must be greater than 0. Overrides `AI_CLI_TIMEOUT` env var.
+</ParamField>
+
+<ParamField body="enable_jira" type="boolean">
+  Enable Jira bug search for PRODUCT BUG failures. Defaults to `true` when Jira is configured.
+</ParamField>
+
+<ParamField body="jira_url" type="string">
+  Jira instance URL. Overrides `JIRA_URL` env var.
+</ParamField>
+
+<ParamField body="jira_email" type="string">
+  Jira Cloud email for authentication. Overrides `JIRA_EMAIL` env var.
+</ParamField>
+
+<ParamField body="jira_api_token" type="string">
+  Jira Cloud API token. Overrides `JIRA_API_TOKEN` env var.
+</ParamField>
+
+<ParamField body="jira_pat" type="string">
+  Jira Server/DC personal access token. Overrides `JIRA_PAT` env var.
+</ParamField>
+
+<ParamField body="jira_project_key" type="string">
+  Jira project key to scope searches (e.g., `PROJ`). Overrides `JIRA_PROJECT_KEY` env var.
+</ParamField>
+
+<ParamField body="jira_ssl_verify" type="boolean">
+  Enable/disable SSL verification for Jira. Overrides `JIRA_SSL_VERIFY` env var.
+</ParamField>
+
+<ParamField body="jira_max_results" type="integer">
+  Maximum Jira search results to retrieve. Must be greater than 0. Overrides `JIRA_MAX_RESULTS` env var.
+</ParamField>
+
+## Response (Async Mode - 202)
+
+<ResponseField name="status" type="string">
+  Always `"queued"` for async requests.
+</ResponseField>
+
+<ResponseField name="job_id" type="string">
+  Unique identifier for polling or retrieving results.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Status message with next steps (callback or polling instructions).
+</ResponseField>
+
+<ResponseField name="base_url" type="string">
+  Base URL of the service (extracted from request headers).
+</ResponseField>
+
+<ResponseField name="result_url" type="string">
+  Full URL to retrieve results: `GET /results/{job_id}`
+</ResponseField>
+
+<ResponseField name="html_report_url" type="string">
+  Full URL to view HTML report: `GET /results/{job_id}.html`
+</ResponseField>
+
+## Response (Sync Mode - 200)
+
+<ResponseField name="job_id" type="string">
+  Unique identifier for the analysis.
+</ResponseField>
+
+<ResponseField name="job_name" type="string">
+  Jenkins job name.
+</ResponseField>
+
+<ResponseField name="build_number" type="integer">
+  Jenkins build number.
+</ResponseField>
+
+<ResponseField name="jenkins_url" type="string">
+  Full URL to the Jenkins build.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `"completed"` for successful sync requests.
+</ResponseField>
+
+<ResponseField name="summary" type="string">
+  Summary of analysis findings.
+</ResponseField>
+
+<ResponseField name="ai_provider" type="string">
+  AI provider used for analysis.
+</ResponseField>
+
+<ResponseField name="ai_model" type="string">
+  AI model used for analysis.
+</ResponseField>
+
+<ResponseField name="failures" type="array">
+  Array of analyzed test failures.
+  
+  <Expandable title="FailureAnalysis object">
+    <ResponseField name="test_name" type="string">
+      Name of the failed test.
+    </ResponseField>
+    
+    <ResponseField name="error" type="string">
+      Error message or exception.
+    </ResponseField>
+    
+    <ResponseField name="analysis" type="object">
+      Structured AI analysis.
+      
+      <Expandable title="AnalysisDetail object">
+        <ResponseField name="classification" type="string">
+          `CODE ISSUE` or `PRODUCT BUG`
+        </ResponseField>
+        
+        <ResponseField name="affected_tests" type="array">
+          List of affected test names.
+        </ResponseField>
+        
+        <ResponseField name="details" type="string">
+          Detailed analysis text.
+        </ResponseField>
+        
+        <ResponseField name="code_fix" type="object">
+          Code fix suggestion (only present for CODE ISSUE).
+          
+          <Expandable title="CodeFix object">
+            <ResponseField name="file" type="string">
+              File path to fix.
+            </ResponseField>
+            
+            <ResponseField name="line" type="string">
+              Line number.
+            </ResponseField>
+            
+            <ResponseField name="change" type="string">
+              Specific code change.
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+        
+        <ResponseField name="product_bug_report" type="object">
+          Product bug report (only present for PRODUCT BUG).
+          
+          <Expandable title="ProductBugReport object">
+            <ResponseField name="title" type="string">
+              Concise bug title.
+            </ResponseField>
+            
+            <ResponseField name="severity" type="string">
+              Bug severity: critical/high/medium/low.
+            </ResponseField>
+            
+            <ResponseField name="component" type="string">
+              Affected component.
+            </ResponseField>
+            
+            <ResponseField name="description" type="string">
+              What product behavior is broken.
+            </ResponseField>
+            
+            <ResponseField name="evidence" type="string">
+              Relevant log snippets.
+            </ResponseField>
+            
+            <ResponseField name="jira_search_keywords" type="array">
+              AI-suggested keywords for Jira search.
+            </ResponseField>
+            
+            <ResponseField name="jira_matches" type="array">
+              Matched Jira issues (populated when Jira integration is enabled).
+              
+              <Expandable title="JiraMatch object">
+                <ResponseField name="key" type="string">
+                  Jira issue key (e.g., PROJ-123).
+                </ResponseField>
+                
+                <ResponseField name="summary" type="string">
+                  Issue summary/title.
+                </ResponseField>
+                
+                <ResponseField name="status" type="string">
+                  Issue status (e.g., Open, In Progress).
+                </ResponseField>
+                
+                <ResponseField name="priority" type="string">
+                  Issue priority (e.g., High, Medium).
+                </ResponseField>
+                
+                <ResponseField name="url" type="string">
+                  Full URL to the Jira issue.
+                </ResponseField>
+                
+                <ResponseField name="score" type="number">
+                  AI-calculated relevance score (0.0-1.0).
+                </ResponseField>
+              </Expandable>
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="child_job_analyses" type="array">
+  Analyses of failed child jobs in pipeline builds.
+  
+  <Expandable title="ChildJobAnalysis object">
+    <ResponseField name="job_name" type="string">
+      Name of the child job.
+    </ResponseField>
+    
+    <ResponseField name="build_number" type="integer">
+      Build number of the child job.
+    </ResponseField>
+    
+    <ResponseField name="jenkins_url" type="string">
+      URL of the child job build.
+    </ResponseField>
+    
+    <ResponseField name="summary" type="string">
+      Summary of the child job failure analysis.
+    </ResponseField>
+    
+    <ResponseField name="failures" type="array">
+      List of FailureAnalysis objects for this child job.
+    </ResponseField>
+    
+    <ResponseField name="failed_children" type="array">
+      Nested ChildJobAnalysis objects (recursive).
+    </ResponseField>
+    
+    <ResponseField name="note" type="string">
+      Additional notes (e.g., "max depth reached").
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="base_url" type="string">
+  Base URL of the service.
+</ResponseField>
+
+<ResponseField name="result_url" type="string">
+  Full URL to retrieve this result.
+</ResponseField>
+
+<ResponseField name="html_report_url" type="string">
+  Full URL to view HTML report.
+</ResponseField>
+
+## Examples
+
+### Async Request
+
+```bash
+curl -X POST https://your-instance.com/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "my-pipeline",
+    "build_number": 123
+  }'
+```
+
+**Response (202):**
+
+```json
+{
+  "status": "queued",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "Analysis job queued. Poll /results/550e8400-e29b-41d4-a716-446655440000 for status.",
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000",
+  "html_report_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000.html"
+}
+```
+
+### Sync Request
+
+```bash
+curl -X POST "https://your-instance.com/analyze?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "my-pipeline",
+    "build_number": 123,
+    "ai_provider": "claude",
+    "ai_model": "claude-opus-4-20250514"
+  }'
+```
+
+**Response (200):**
+
+```json
+{
+  "job_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "job_name": "my-pipeline",
+  "build_number": 123,
+  "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+  "status": "completed",
+  "summary": "Analyzed 5 test failures (3 unique errors). 2 CODE ISSUES, 1 PRODUCT BUG.",
+  "ai_provider": "claude",
+  "ai_model": "claude-opus-4-20250514",
+  "failures": [
+    {
+      "test_name": "com.example.UserServiceTest.testLogin",
+      "error": "NullPointerException: username cannot be null",
+      "analysis": {
+        "classification": "CODE ISSUE",
+        "affected_tests": ["com.example.UserServiceTest.testLogin"],
+        "details": "The test is failing due to a missing null check in the login method.",
+        "code_fix": {
+          "file": "src/main/java/com/example/UserService.java",
+          "line": "42",
+          "change": "Add null check: if (username == null) throw new IllegalArgumentException()"
+        }
+      }
+    }
+  ],
+  "child_job_analyses": [],
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "html_report_url": "https://your-instance.com/results/7c9e6679-7425-40de-944b-e07fc1f90ae7.html"
+}
+```
+
+### With Callback
+
+```bash
+curl -X POST https://your-instance.com/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "my-pipeline",
+    "build_number": 123,
+    "callback_url": "https://your-app.com/webhook",
+    "callback_headers": {
+      "Authorization": "Bearer secret-token"
+    }
+  }'
+```
+
+When analysis completes, the full result (same structure as sync mode 200 response) will be POST-ed to the callback URL with the specified headers.
+
+## Error Responses
+
+### Missing AI Configuration
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "No AI provider configured. Set AI_PROVIDER env var or pass ai_provider in request body. Valid providers: claude, cursor, gemini"
+}
+```
+
+### Missing Jenkins Configuration
+
+**Status Code:** `400 Bad Request`
+
+```json
+{
+  "detail": "No AI model configured. Set AI_MODEL env var or pass ai_model in request body."
+}
+```
+
+## See Also
+
+- [GET /results/{job_id}](/api/results) - Poll for async results
+- [POST /analyze-failures](/api/analyze-failures) - Analyze raw failures without Jenkins

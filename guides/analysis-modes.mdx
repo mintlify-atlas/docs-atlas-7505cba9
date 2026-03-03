@@ -1,0 +1,234 @@
+---
+title: Analysis Modes
+description: Choose between async and sync analysis modes for different workflows
+---
+
+Jenkins Job Insight supports two analysis modes to accommodate different integration patterns. Choose the mode that best fits your workflow.
+
+## Async Mode (Default)
+
+Async mode returns immediately with a job ID, allowing you to poll for results or receive them via webhook callback. This is ideal for long-running analyses and CI/CD integrations.
+
+### How It Works
+
+1. Submit analysis request to `/analyze`
+2. Receive job ID immediately (HTTP 202)
+3. Poll `/results/{job_id}` for status updates
+4. Or configure a callback webhook to receive results automatically
+
+### Example: Async with Polling
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "test-pipeline",
+    "build_number": 123,
+    "ai_provider": "claude",
+    "ai_model": "claude-sonnet-4-20250514"
+  }'
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/analyze",
+    json={
+        "job_name": "test-pipeline",
+        "build_number": 123,
+        "ai_provider": "claude",
+        "ai_model": "claude-sonnet-4-20250514"
+    }
+)
+
+data = response.json()
+job_id = data["job_id"]
+print(f"Job queued: {job_id}")
+print(f"Status URL: {data['result_url']}")
+print(f"Report URL: {data['html_report_url']}")
+```
+
+</CodeGroup>
+
+**Response:**
+
+```json
+{
+  "status": "queued",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "Analysis job queued. Poll /results/{job_id} for status.",
+  "base_url": "http://localhost:8000",
+  "result_url": "http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000",
+  "html_report_url": "http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000.html"
+}
+```
+
+### Example: Async with Callback
+
+Configure a webhook to receive results automatically when analysis completes:
+
+```bash cURL
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "test-pipeline",
+    "build_number": 123,
+    "ai_provider": "claude",
+    "ai_model": "claude-sonnet-4-20250514",
+    "callback_url": "https://your-service.com/webhook",
+    "callback_headers": {
+      "Authorization": "Bearer YOUR_TOKEN"
+    }
+  }'
+```
+
+The server will POST the complete analysis result to your webhook when ready.
+
+### Polling for Results
+
+Check the analysis status using the job ID:
+
+<CodeGroup>
+
+```bash cURL
+curl http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000
+```
+
+```python Python
+import time
+import requests
+
+job_id = "550e8400-e29b-41d4-a716-446655440000"
+
+while True:
+    response = requests.get(f"http://localhost:8000/results/{job_id}")
+    data = response.json()
+    
+    status = data["status"]
+    print(f"Status: {status}")
+    
+    if status == "completed":
+        print("Analysis complete!")
+        print(f"HTML report: {data['result']['html_report_url']}")
+        break
+    elif status == "failed":
+        print(f"Analysis failed: {data['result']['error']}")
+        break
+    
+    time.sleep(5)  # Poll every 5 seconds
+```
+
+</CodeGroup>
+
+## Sync Mode
+
+Sync mode blocks until analysis is complete and returns the full result immediately. Use this for simple scripts or when you need immediate results.
+
+### How It Works
+
+1. Submit analysis request to `/analyze?sync=true`
+2. Server blocks until AI analysis completes
+3. Receive complete analysis result (HTTP 200)
+
+### Example: Sync Analysis
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST "http://localhost:8000/analyze?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "test-pipeline",
+    "build_number": 123,
+    "ai_provider": "claude",
+    "ai_model": "claude-sonnet-4-20250514"
+  }'
+```
+
+```python Python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/analyze",
+    params={"sync": "true"},
+    json={
+        "job_name": "test-pipeline",
+        "build_number": 123,
+        "ai_provider": "claude",
+        "ai_model": "claude-sonnet-4-20250514"
+    },
+    timeout=600  # AI analysis can take several minutes
+)
+
+result = response.json()
+print(f"Status: {result['status']}")
+print(f"Summary: {result['summary']}")
+print(f"HTML Report: {result['html_report_url']}")
+```
+
+</CodeGroup>
+
+**Response:**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_name": "test-pipeline",
+  "build_number": 123,
+  "jenkins_url": "https://jenkins.example.com/job/test-pipeline/123/",
+  "status": "completed",
+  "summary": "3 failure(s) analyzed (2 unique error types)",
+  "ai_provider": "claude",
+  "ai_model": "claude-sonnet-4-20250514",
+  "failures": [...],
+  "base_url": "http://localhost:8000",
+  "result_url": "http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000",
+  "html_report_url": "http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000.html"
+}
+```
+
+## Choosing the Right Mode
+
+<CardGroup cols={2}>
+
+<Card title="Use Async When" icon="clock">
+- Integrating with CI/CD pipelines
+- Analysis takes more than a few seconds
+- You need to show progress to users
+- Multiple analyses run concurrently
+</Card>
+
+<Card title="Use Sync When" icon="bolt">
+- Running quick scripts or one-off analyses
+- You need results immediately
+- Simplicity is more important than scalability
+- Testing or debugging the API
+</Card>
+
+</CardGroup>
+
+## Implementation Details
+
+Both modes use the same analysis engine under the hood. The difference is only in how results are delivered:
+
+- **Async mode** (main.py:366-451): Uses FastAPI's `BackgroundTasks` to queue analysis jobs
+- **Sync mode** (main.py:384-423): Awaits the analysis coroutine directly before returning
+
+```python main.py:372-376
+if sync:
+    logger.info(
+        f"Sync analysis request received for {body.job_name} #{body.build_number}"
+    )
+
+    merged = _merge_settings(body, settings)
+    ai_provider, ai_model = _resolve_ai_config(body)
+
+    result = await analyze_job(
+        body, merged, ai_provider=ai_provider, ai_model=ai_model
+    )
+```
+
+Both modes support the same request parameters and produce identical analysis results.

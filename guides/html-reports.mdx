@@ -1,0 +1,318 @@
+---
+title: HTML Report Generation
+description: Generate and view beautiful HTML reports for test failure analysis
+---
+
+Jenkins Job Insight generates self-contained, dark-themed HTML reports for every analysis. Reports are cached on disk and can be regenerated on-demand.
+
+## Accessing Reports
+
+Every analysis result includes an `html_report_url` that points to the HTML report:
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "html_report_url": "http://localhost:8000/results/550e8400-e29b-41d4-a716-446655440000.html"
+}
+```
+
+Open this URL in any browser to view the interactive report.
+
+## Report Features
+
+### Sticky Header
+
+The header stays visible as you scroll, showing:
+- Job name and build number
+- Total failure count
+- Analysis status
+- AI provider and model used
+- Direct link to Jenkins build
+- Regenerate button
+
+### Root Cause Analysis
+
+Failures are automatically grouped by root cause using:
+- Classification (CODE ISSUE vs PRODUCT BUG)
+- First 4 words of bug title (for product bugs)
+- File path (for code issues)
+
+Each group shows:
+- Unique bug ID (BUG-1, BUG-2, etc.)
+- Severity badge (critical/high/medium/low)
+- Classification tag
+- Number of affected tests
+- AI analysis details
+- Code fix or bug report
+- Jira matches (when configured)
+
+### Child Job Analyses
+
+For pipeline jobs, child job failures are shown in collapsible sections with:
+- Child job name and build number
+- Direct Jenkins link
+- Recursive analysis of failures
+- Summary of all failures in the pipeline
+
+### All Failures Table
+
+A sortable table showing every individual failure with:
+- Test name
+- Error message
+- Classification
+- Bug reference ID
+
+### Key Takeaway
+
+A highlighted summary section showing the overall analysis result.
+
+## Report Generation
+
+Reports are generated lazily and cached to disk for performance.
+
+### On-Demand Generation
+
+```python html_report.py:633-684
+@app.get("/results/{job_id}.html", response_class=HTMLResponse)
+async def get_job_report(
+    job_id: str,
+    *,
+    refresh: bool = Query(
+        default=False, description="Force regeneration of the HTML report"
+    ),
+) -> HTMLResponse:
+    """Serve an HTML report, generating it on-demand if needed.
+
+    Reports are generated lazily from stored results and cached to disk.
+    Pass ``?refresh=1`` to force regeneration (e.g. after a code update).
+    """
+    # Try disk cache first (skip when refresh requested)
+    if not refresh:
+        html_content = await get_html_report(job_id)
+        if html_content:
+            return HTMLResponse(html_content)
+
+    # Check if the job exists
+    result = await get_result(job_id)
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job '{job_id}' not found.",
+        )
+
+    status = result.get("status", "unknown")
+    if status in ("pending", "running"):
+        return HTMLResponse(
+            format_status_page(job_id, status, result),
+            headers={"Refresh": "10"},
+        )
+
+    # Generate HTML on-demand from stored result data
+    result_data = result.get("result")
+    if result_data and status == "completed":
+        analysis_result = _build_analysis_result(job_id, result_data)
+        html_content = format_result_as_html(analysis_result)
+        try:
+            await save_html_report(job_id, html_content)
+        except OSError:
+            logger.warning(
+                "Failed to cache HTML report for job_id: %s", job_id, exc_info=True
+            )
+        logger.info(f"HTML report generated on-demand for job_id: {job_id}")
+        return HTMLResponse(html_content)
+```
+
+<Steps>
+
+<Step title="Check disk cache">
+If `refresh=false` (default), try loading from cache.
+</Step>
+
+<Step title="Check job status">
+If pending or running, show status page with auto-refresh.
+</Step>
+
+<Step title="Generate from stored result">
+For completed jobs, generate HTML from the stored analysis data.
+</Step>
+
+<Step title="Cache to disk">
+Save generated HTML for future requests.
+</Step>
+
+</Steps>
+
+### Regenerating Reports
+
+Force regeneration by adding `?refresh=1` to the URL:
+
+```bash
+curl http://localhost:8000/results/{job_id}.html?refresh=1
+```
+
+This is useful when:
+- You've updated the HTML template
+- You want to see fresh formatting
+- The cached version is corrupted
+
+## Status Pages
+
+While analysis is running, the HTML report URL shows a status page:
+
+```python html_report.py:1089-1247
+def format_status_page(job_id: str, status: str, result: dict) -> str:
+    """Generate a status page for a job that is still processing.
+
+    Uses the same dark theme as the full report, with auto-refresh
+    and a simple status indicator.
+    """
+```
+
+The status page:
+- Auto-refreshes every 10 seconds
+- Shows current status (pending/running)
+- Displays job ID and creation time
+- Links to Jenkins build
+- Uses the same dark theme for consistency
+
+## Dark Theme
+
+All reports use a GitHub-inspired dark theme with:
+
+```css html_report.py:36-110
+:root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --bg-hover: #292e36;
+    --border: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #6e7681;
+    --accent-red: #f85149;
+    --accent-red-bg: rgba(248, 81, 73, 0.12);
+    --accent-green: #3fb950;
+    --accent-blue: #58a6ff;
+    --accent-blue-bg: rgba(88, 166, 255, 0.08);
+    --accent-yellow: #d29922;
+    --accent-orange: #f0883e;
+    --accent-orange-bg: rgba(240, 136, 62, 0.12);
+    --accent-purple: #bc8cff;
+    --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --radius: 8px;
+}
+```
+
+All CSS is inlined, so reports can be:
+- Saved to disk and opened locally
+- Attached to emails
+- Archived for compliance
+- Shared without external dependencies
+
+## Failure Grouping Logic
+
+The report intelligently groups failures to reduce noise:
+
+```python html_report.py:642-670
+def _grouping_key(detail: AnalysisDetail) -> str:
+    """Compute a grouping key for root cause aggregation.
+
+    Groups by classification + first 4 words of the bug title
+    (for product bugs) or classification + file path (for code issues).
+    Falls back to full JSON match when neither is available.
+
+    The first 4 words of the title capture the essence of the bug
+    while tolerating minor phrasing variations from different AI calls.
+    """
+    cls = (detail.classification or "").strip().upper()
+
+    # For product bugs, group by classification + first 4 words of title
+    if (
+        isinstance(detail.product_bug_report, ProductBugReport)
+        and detail.product_bug_report.title
+    ):
+        title = detail.product_bug_report.title.strip().lower()
+        words = title.split()[:4]
+        normalized_title = " ".join(words)
+        return f"{cls}|title:{normalized_title}"
+
+    # For code issues, group by classification + file path
+    if isinstance(detail.code_fix, CodeFix) and detail.code_fix.file:
+        return f"{cls}|file:{detail.code_fix.file.strip()}"
+
+    # Fallback: full JSON match
+    return detail.model_dump_json()
+```
+
+### Singleton Merging
+
+If one group contains >50% of failures, singleton groups with the same classification are merged into it:
+
+```python html_report.py:706-734
+# Second pass: merge singletons into the dominant group
+total = len(failures)
+if total > 2 and len(groups_map) > 1:
+    # Find the largest group
+    dominant_key = max(groups_map, key=lambda k: len(groups_map[k]))
+    dominant_size = len(groups_map[dominant_key])
+
+    if dominant_size > total * 0.5:
+        # Get the classification of the dominant group
+        dominant_cls = (
+            groups_map[dominant_key][0].analysis.classification.strip().upper()
+        )
+        # Merge singletons with the same classification
+        keys_to_remove: list[str] = []
+        for key in order:
+            if key == dominant_key:
+                continue
+            if len(groups_map[key]) == 1:
+                singleton_cls = (
+                    groups_map[key][0].analysis.classification.strip().upper()
+                )
+                if singleton_cls == dominant_cls:
+                    groups_map[dominant_key].extend(groups_map[key])
+                    keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            del groups_map[key]
+            order.remove(key)
+```
+
+This reduces noise when the AI uses slightly different phrasing for the same issue.
+
+## Dashboard
+
+View all analysis results in a sortable dashboard:
+
+```bash
+http://localhost:8000/dashboard
+```
+
+The dashboard shows:
+- All recent analysis jobs
+- Job name, build number, status
+- Failure count
+- Timestamp
+- Direct links to HTML reports
+- Search and pagination
+
+### Loading More Results
+
+By default, the dashboard loads the last 500 jobs. Adjust this via the `limit` parameter:
+
+```bash
+http://localhost:8000/dashboard?limit=1000
+```
+
+## Customization
+
+The HTML generation code is in `src/jenkins_job_insight/html_report.py`. You can customize:
+
+- **Theme colors**: Edit CSS custom properties (html_report.py:47-68)
+- **Grouping logic**: Modify `_grouping_key()` (html_report.py:642-670)
+- **Card layout**: Edit `_render_group_card()` (html_report.py:829-937)
+- **Header content**: Modify sticky header section (html_report.py:506-520)
+
+Regenerate existing reports with `?refresh=1` to see your changes.

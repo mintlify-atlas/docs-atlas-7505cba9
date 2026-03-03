@@ -1,0 +1,480 @@
+---
+title: Jira Integration
+description: Configure Jira integration to search for existing bugs matching test failures
+---
+
+Jira integration is **completely optional**. When configured, Jenkins Job Insight searches Jira for existing bugs when the AI classifies a failure as **PRODUCT BUG**.
+
+## How It Works
+
+1. AI analyzes test failure and classifies as **PRODUCT BUG**
+2. AI generates specific `jira_search_keywords` in the bug report
+3. Service searches Jira for Bug-type issues using those keywords
+4. AI evaluates each Jira candidate by reading summary and description
+5. Only relevant matches are attached to the response as `jira_matches`
+6. HTML reports render matches as clickable links
+7. JUnit XML reports include matches as properties
+
+<Note>
+  Jira integration works with all analysis endpoints: `/analyze`, `/analyze?sync=true`, and `/analyze-failures`.
+</Note>
+
+## Configuration
+
+Jira integration supports both **Jira Cloud** and **Jira Server/DC**.
+
+### Auto-Detection
+
+Jira is automatically enabled when you configure:
+
+1. `JIRA_URL` - Your Jira instance URL
+2. Authentication credentials (see below)
+
+```bash
+# Jira Cloud example
+JIRA_URL=https://your-org.atlassian.net
+JIRA_EMAIL=your-email@example.com
+JIRA_API_TOKEN=your-jira-api-token
+
+# Jira Server/DC example  
+JIRA_URL=https://jira.your-company.com
+JIRA_PAT=your-personal-access-token
+```
+
+<Note>
+  When `JIRA_URL` and credentials are configured, Jira integration is automatically enabled. No additional flag needed.
+</Note>
+
+### Explicit Control
+
+Override auto-detection with `ENABLE_JIRA`:
+
+```bash
+# Explicitly enable (even if credentials missing - will warn)
+ENABLE_JIRA=true
+
+# Explicitly disable (even if credentials present)
+ENABLE_JIRA=false
+```
+
+## Jira Cloud Authentication
+
+Jira Cloud requires email and API token authentication.
+
+<ParamField path="JIRA_URL" type="string" required>
+  Your Jira Cloud instance URL.
+  
+  ```bash
+  JIRA_URL=https://your-org.atlassian.net
+  ```
+</ParamField>
+
+<ParamField path="JIRA_EMAIL" type="string" required>
+  Email address for Jira Cloud authentication.
+  
+  ```bash
+  JIRA_EMAIL=your-email@example.com
+  ```
+</ParamField>
+
+<ParamField path="JIRA_API_TOKEN" type="string" required>
+  API token for Jira Cloud.
+  
+  ```bash
+  JIRA_API_TOKEN=your-jira-api-token
+  ```
+  
+  <Note>
+    Generate API tokens from: Jira → Account Settings → Security → API Tokens
+  </Note>
+</ParamField>
+
+### Docker Example (Cloud)
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=claude \
+  -e AI_MODEL=claude-opus-4-6[1m] \
+  -e JIRA_URL=https://your-org.atlassian.net \
+  -e JIRA_EMAIL=your-email@example.com \
+  -e JIRA_API_TOKEN=your-jira-api-token \
+  jenkins-job-insight
+```
+
+## Jira Server/DC Authentication
+
+Jira Server and Data Center use Personal Access Token (PAT) authentication.
+
+<ParamField path="JIRA_URL" type="string" required>
+  Your Jira Server/DC instance URL.
+  
+  ```bash
+  JIRA_URL=https://jira.your-company.com
+  ```
+</ParamField>
+
+<ParamField path="JIRA_PAT" type="string" required>
+  Personal Access Token for Jira Server/DC.
+  
+  ```bash
+  JIRA_PAT=your-personal-access-token
+  ```
+  
+  <Note>
+    Generate PATs from: Jira → Profile → Personal Access Tokens
+  </Note>
+</ParamField>
+
+### Docker Example (Server/DC)
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=claude \
+  -e AI_MODEL=claude-opus-4-6[1m] \
+  -e JIRA_URL=https://jira.your-company.com \
+  -e JIRA_PAT=your-personal-access-token \
+  jenkins-job-insight
+```
+
+## Search Configuration
+
+<ParamField path="JIRA_PROJECT_KEY" type="string">
+  Scope Jira searches to a specific project.
+  
+  ```bash
+  JIRA_PROJECT_KEY=PROJ
+  ```
+  
+  <Note>
+    When omitted, searches across all projects accessible to the authenticated user.
+  </Note>
+</ParamField>
+
+<ParamField path="JIRA_MAX_RESULTS" type="integer" default="5">
+  Maximum number of Jira results per search.
+  
+  ```bash
+  JIRA_MAX_RESULTS=10
+  ```
+  
+  <Note>
+    Must be greater than 0. AI filters these results for actual relevance after retrieval.
+  </Note>
+</ParamField>
+
+<ParamField path="JIRA_SSL_VERIFY" type="boolean" default="true">
+  SSL certificate verification for Jira connections.
+  
+  ```bash
+  JIRA_SSL_VERIFY=false
+  ```
+  
+  <Warning>
+    Only disable for self-signed certificates in development/testing environments.
+  </Warning>
+</ParamField>
+
+## AI-Powered Keyword Generation
+
+The AI generates **specific search keywords** during failure analysis:
+
+```json
+{
+  "classification": "PRODUCT BUG",
+  "product_bug_report": {
+    "title": "VM start failure during migration",
+    "severity": "high",
+    "component": "migration-service",
+    "jira_search_keywords": [
+      "VM start failure migration",
+      "migration timeout",
+      "vSphere VM stuck"
+    ]
+  }
+}
+```
+
+### Keyword Quality Rules
+
+<Note>
+  The AI follows strict rules for generating high-quality search keywords:
+</Note>
+
+- **3-5 SHORT specific keywords** for finding matching bugs
+- Focus on **specific error symptom** and **broken behavior**
+- Combine **component name** with **specific failure** (e.g., "API timeout authentication")
+- **AVOID generic/broad terms** like "error", "failure", "timeout" alone
+- Each keyword should **narrow results to relevant bugs**
+
+**Good Keywords:**
+- ✅ "VM start failure migration"
+- ✅ "authentication 401 valid credentials"
+- ✅ "database connection pool exhausted"
+
+**Bad Keywords:**
+- ❌ "vSphere" (too broad)
+- ❌ "timeout" (generic)
+- ❌ "test failure" (infrastructure, not product)
+
+## Relevance Filtering
+
+After retrieving Jira candidates, the AI **evaluates each issue** by reading its summary and description to determine actual relevance.
+
+```python
+# The AI reads each Jira issue and assigns a relevance score
+for issue in jira_results:
+    score = ai.evaluate_relevance(
+        test_failure=failure,
+        jira_summary=issue.summary,
+        jira_description=issue.description
+    )
+    if score > threshold:
+        relevant_matches.append(issue)
+```
+
+<Note>
+  Only genuinely relevant matches are included in the response. The AI filters out false positives.
+</Note>
+
+## Response Format
+
+When Jira finds matching bugs, they appear in `jira_matches`:
+
+```json
+{
+  "analysis": {
+    "classification": "PRODUCT BUG",
+    "product_bug_report": {
+      "title": "Authentication endpoint rejects valid credentials",
+      "severity": "high",
+      "component": "auth-service",
+      "description": "The /api/auth/login endpoint returns 401...",
+      "evidence": "AssertionError: expected 200 but got 401",
+      "jira_search_keywords": [
+        "authentication 401",
+        "valid credentials rejected",
+        "login endpoint failure"
+      ],
+      "jira_matches": [
+        {
+          "key": "AUTH-456",
+          "summary": "Login fails with valid credentials after session timeout",
+          "status": "Open",
+          "priority": "High",
+          "url": "https://jira.example.com/browse/AUTH-456",
+          "score": 0.85
+        }
+      ]
+    }
+  }
+}
+```
+
+## Per-Request Control
+
+Enable or disable Jira search per-request:
+
+```bash
+curl -X POST "http://localhost:8000/analyze?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "my-project",
+    "build_number": 123,
+    "ai_provider": "claude",
+    "ai_model": "sonnet",
+    "enable_jira": true,
+    "jira_project_key": "MYPROJ"
+  }'
+```
+
+<Tabs>
+  <Tab title="Enable Jira">
+    ```json
+    {
+      "enable_jira": true
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Disable Jira">
+    ```json
+    {
+      "enable_jira": false
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Auto-detect">
+    ```json
+    {
+      // Omit enable_jira - uses environment variable configuration
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Override Jira Credentials
+
+Override Jira settings per-request:
+
+```json
+{
+  "job_name": "my-project",
+  "build_number": 123,
+  "ai_provider": "claude",
+  "ai_model": "sonnet",
+  "jira_url": "https://other-jira.atlassian.net",
+  "jira_email": "other-email@example.com",
+  "jira_api_token": "other-token",
+  "jira_project_key": "OTHER",
+  "jira_max_results": 10
+}
+```
+
+## HTML Report Integration
+
+Jira matches appear as clickable links in HTML reports:
+
+```html
+<div class="jira-matches">
+  <h4>Potentially Related Jira Issues</h4>
+  <ul>
+    <li>
+      <a href="https://jira.example.com/browse/AUTH-456" target="_blank">
+        AUTH-456: Login fails with valid credentials (High, Open)
+      </a>
+      <span class="score">Relevance: 85%</span>
+    </li>
+  </ul>
+</div>
+```
+
+## JUnit XML Integration
+
+Jira matches are injected as properties in enriched JUnit XML:
+
+```xml
+<testcase classname="tests.test_auth" name="test_login">
+  <failure message="assert False">...</failure>
+  <properties>
+    <property name="ai_classification" value="PRODUCT BUG"/>
+    <property name="ai_jira_match_0_key" value="AUTH-456"/>
+    <property name="ai_jira_match_0_summary" value="Login fails with valid credentials"/>
+    <property name="ai_jira_match_0_url" value="https://jira.example.com/browse/AUTH-456"/>
+    <property name="ai_jira_match_0_score" value="0.85"/>
+  </properties>
+</testcase>
+```
+
+## Error Handling
+
+Jira failures **never crash the analysis pipeline**:
+
+| Scenario | Behavior |
+|----------|----------|
+| **Not configured** | Feature silently disabled |
+| **Auth failure** | Warning logged, empty matches returned |
+| **Network error** | Error logged, empty matches returned |
+| **No keywords from AI** | Jira search skipped for that failure |
+| **Search timeout** | Warning logged, empty matches returned |
+
+```python
+try:
+    matches = jira_client.search(keywords)
+except JiraAuthError as e:
+    logger.warning(f"Jira auth failed: {e}")
+    return []  # Continue with empty matches
+except JiraNetworkError as e:
+    logger.error(f"Jira network error: {e}")
+    return []  # Continue with empty matches
+```
+
+<Note>
+  Analysis always completes successfully, even if Jira integration fails. Jira matches are a bonus, not a requirement.
+</Note>
+
+## Configuration Validation
+
+The service validates Jira configuration on startup:
+
+```python
+@property
+def jira_enabled(self) -> bool:
+    if self.enable_jira is False:
+        return False
+    if not self.jira_url:
+        if self.enable_jira is True:
+            logger.warning("enable_jira is True but JIRA_URL is not configured")
+        return False
+    # Cloud auth: email + API token
+    has_cloud_auth = bool(self.jira_email and self.jira_api_token)
+    # Server/DC auth: PAT
+    has_server_auth = bool(self.jira_pat)
+    if not (has_cloud_auth or has_server_auth):
+        if self.enable_jira is True:
+            logger.warning("enable_jira is True but no Jira credentials are configured")
+        return False
+    return has_cloud_auth or has_server_auth
+```
+
+## Troubleshooting
+
+### Jira Not Searching
+
+**Symptom:** No `jira_matches` in response even though Jira is configured.
+
+✅ **Solution:** Check if AI generated keywords:
+
+```json
+{
+  "product_bug_report": {
+    "jira_search_keywords": []  // Empty - Jira search skipped
+  }
+}
+```
+
+If keywords are present, check logs for Jira errors.
+
+### Authentication Failed
+
+**Jira Cloud:**
+```
+Warning: Jira auth failed: 401 Unauthorized
+```
+
+✅ **Solution:** Verify `JIRA_EMAIL` and `JIRA_API_TOKEN` are correct.
+
+**Jira Server/DC:**
+```
+Warning: Jira auth failed: Invalid PAT
+```
+
+✅ **Solution:** Verify `JIRA_PAT` is a valid Personal Access Token.
+
+### SSL Certificate Error
+
+```
+Error: Jira network error: SSL certificate verification failed
+```
+
+✅ **Solution:** Disable SSL verification for self-signed certificates:
+
+```bash
+JIRA_SSL_VERIFY=false
+```
+
+### No Relevant Matches
+
+**Symptom:** Jira returns results, but all filtered out by AI.
+
+✅ **Expected behavior** - The AI filters out false positives. If no truly relevant bugs exist, `jira_matches` will be empty even if Jira returned candidates.

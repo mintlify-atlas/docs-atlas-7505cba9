@@ -1,0 +1,350 @@
+---
+title: "Response Models"
+description: "Response model schemas for Jenkins Job Insight API"
+---
+
+## AnalysisResult
+
+Complete analysis result for a Jenkins job.
+
+<ResponseField name="job_id" type="string" required>
+  Unique identifier for the analysis job
+</ResponseField>
+
+<ResponseField name="job_name" type="string" default="">
+  Jenkins job name
+</ResponseField>
+
+<ResponseField name="build_number" type="integer" default={0}>
+  Jenkins build number
+</ResponseField>
+
+<ResponseField name="jenkins_url" type="HttpUrl">
+  URL of the analyzed Jenkins job (None for non-Jenkins analysis)
+</ResponseField>
+
+<ResponseField name="status" type="Literal['pending', 'running', 'completed', 'failed']" required>
+  Current status of the analysis
+</ResponseField>
+
+<ResponseField name="summary" type="string" required>
+  Summary of the analysis findings
+</ResponseField>
+
+<ResponseField name="ai_provider" type="string" default="">
+  AI provider used for analysis
+</ResponseField>
+
+<ResponseField name="ai_model" type="string" default="">
+  AI model used for analysis
+</ResponseField>
+
+<ResponseField name="failures" type="array" default={[]}>
+  List of analyzed failures
+  
+  <Expandable title="FailureAnalysis Schema">
+    See [FailureAnalysis](#failureanalysis) section below for complete schema
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="child_job_analyses" type="array" default={[]}>
+  Analyses of failed child jobs in pipeline
+  
+  <Expandable title="ChildJobAnalysis Schema">
+    <ResponseField name="job_name" type="string" required>
+      Name of the child job
+    </ResponseField>
+    
+    <ResponseField name="build_number" type="integer" required>
+      Build number of the child job
+    </ResponseField>
+    
+    <ResponseField name="jenkins_url" type="string">
+      URL of the child job build
+    </ResponseField>
+    
+    <ResponseField name="summary" type="string">
+      Summary of the child job failure analysis
+    </ResponseField>
+    
+    <ResponseField name="failures" type="array" default={[]}>
+      List of analyzed failures in child job (see [FailureAnalysis](#failureanalysis))
+    </ResponseField>
+    
+    <ResponseField name="failed_children" type="array" default={[]}>
+      Nested failed child jobs (recursive structure)
+    </ResponseField>
+    
+    <ResponseField name="note" type="string">
+      Additional notes (e.g., max depth reached)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```json
+{
+  "job_id": "abc123-def456",
+  "job_name": "frontend/build-pipeline",
+  "build_number": 42,
+  "jenkins_url": "https://jenkins.example.com/job/frontend/job/build-pipeline/42/",
+  "status": "completed",
+  "summary": "Analysis completed: 2 test failures analyzed",
+  "ai_provider": "claude",
+  "ai_model": "claude-3-5-sonnet-20241022",
+  "failures": [
+    {
+      "test_name": "com.example.TestClass.testMethod",
+      "error": "AssertionError: Expected 200 but got 500",
+      "analysis": {
+        "classification": "PRODUCT BUG",
+        "affected_tests": ["com.example.TestClass.testMethod"],
+        "details": "API endpoint returning 500 error...",
+        "product_bug_report": {
+          "title": "API returns 500 error on user lookup",
+          "severity": "high",
+          "component": "user-service",
+          "description": "The /api/users endpoint fails with 500...",
+          "evidence": "Error: Internal Server Error...",
+          "jira_search_keywords": ["user-service", "500 error", "API"],
+          "jira_matches": []
+        }
+      }
+    }
+  ],
+  "child_job_analyses": []
+}
+```
+
+---
+
+## FailureAnalysisResult
+
+Analysis result for direct failure analysis (no Jenkins context).
+
+<ResponseField name="job_id" type="string" required>
+  Unique identifier for the analysis job
+</ResponseField>
+
+<ResponseField name="status" type="Literal['completed', 'failed']" required>
+  Analysis status
+</ResponseField>
+
+<ResponseField name="summary" type="string" required>
+  Summary of the analysis findings
+</ResponseField>
+
+<ResponseField name="ai_provider" type="string" default="">
+  AI provider used
+</ResponseField>
+
+<ResponseField name="ai_model" type="string" default="">
+  AI model used
+</ResponseField>
+
+<ResponseField name="failures" type="array" default={[]}>
+  Analyzed failures (see [FailureAnalysis](#failureanalysis) section)
+</ResponseField>
+
+<ResponseField name="enriched_xml" type="string">
+  Enriched JUnit XML with analysis results (only when raw_xml was provided in request)
+</ResponseField>
+
+### Example
+
+```json
+{
+  "job_id": "xyz789-abc123",
+  "status": "completed",
+  "summary": "Analyzed 3 test failures",
+  "ai_provider": "gemini",
+  "ai_model": "gemini-2.0-flash-exp",
+  "failures": [
+    {
+      "test_name": "com.example.TestClass.testMethod",
+      "error": "NullPointerException",
+      "analysis": {
+        "classification": "CODE ISSUE",
+        "affected_tests": ["com.example.TestClass.testMethod"],
+        "details": "Null pointer dereference in initialization...",
+        "code_fix": {
+          "file": "src/main/java/com/example/Service.java",
+          "line": "42",
+          "change": "Add null check before accessing user object"
+        }
+      }
+    }
+  ],
+  "enriched_xml": null
+}
+```
+
+---
+
+## FailureAnalysis
+
+Analysis result for a single test failure.
+
+<ResponseField name="test_name" type="string" required>
+  Name of the failed test
+</ResponseField>
+
+<ResponseField name="error" type="string" required>
+  Error message or exception
+</ResponseField>
+
+<ResponseField name="analysis" type="object" required>
+  Structured AI analysis output
+  
+  <Expandable title="AnalysisDetail Schema">
+    <ResponseField name="classification" type="string" default="">
+      Classification type: "CODE ISSUE" or "PRODUCT BUG"
+    </ResponseField>
+    
+    <ResponseField name="affected_tests" type="array" default={[]}>
+      List of affected test names
+    </ResponseField>
+    
+    <ResponseField name="details" type="string" default="">
+      Detailed analysis text
+    </ResponseField>
+    
+    <ResponseField name="code_fix" type="object">
+      Code fix suggestion (only present if classification is "CODE ISSUE")
+      
+      <Expandable title="CodeFix Schema">
+        <ResponseField name="file" type="string" default="">
+          File path to fix
+        </ResponseField>
+        
+        <ResponseField name="line" type="string" default="">
+          Line number
+        </ResponseField>
+        
+        <ResponseField name="change" type="string" default="">
+          Specific code change
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    
+    <ResponseField name="product_bug_report" type="object">
+      Product bug report (only present if classification is "PRODUCT BUG")
+      
+      <Expandable title="ProductBugReport Schema">
+        <ResponseField name="title" type="string" default="">
+          Concise bug title
+        </ResponseField>
+        
+        <ResponseField name="severity" type="string" default="">
+          Bug severity: critical/high/medium/low
+        </ResponseField>
+        
+        <ResponseField name="component" type="string" default="">
+          Affected component
+        </ResponseField>
+        
+        <ResponseField name="description" type="string" default="">
+          What product behavior is broken
+        </ResponseField>
+        
+        <ResponseField name="evidence" type="string" default="">
+          Relevant log snippets
+        </ResponseField>
+        
+        <ResponseField name="jira_search_keywords" type="array" default={[]}>
+          AI-suggested keywords for Jira search
+        </ResponseField>
+        
+        <ResponseField name="jira_matches" type="array" default={[]}>
+          Matched Jira issues (populated in post-processing)
+          
+          <Expandable title="JiraMatch Schema">
+            <ResponseField name="key" type="string" required>
+              Jira issue key (e.g., PROJ-123)
+            </ResponseField>
+            
+            <ResponseField name="summary" type="string" required>
+              Issue summary/title
+            </ResponseField>
+            
+            <ResponseField name="status" type="string" default="">
+              Issue status (e.g., Open, In Progress)
+            </ResponseField>
+            
+            <ResponseField name="priority" type="string" default="">
+              Issue priority (e.g., High, Medium)
+            </ResponseField>
+            
+            <ResponseField name="url" type="string" default="">
+              Full URL to the Jira issue
+            </ResponseField>
+            
+            <ResponseField name="score" type="number" default={0.0}>
+              Relevance score (0.0-1.0)
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Note>
+  **Validation**: The `code_fix` and `product_bug_report` fields are mutually exclusive. Only one will be present based on the classification.
+</Note>
+
+<Note>
+  **Backward Compatibility**: The analysis field accepts legacy string format for data stored before the AnalysisDetail model was introduced. String values are automatically wrapped in the `details` field.
+</Note>
+
+### Example - Code Issue
+
+```json
+{
+  "test_name": "com.example.TestClass.testNullPointer",
+  "error": "NullPointerException at line 42",
+  "analysis": {
+    "classification": "CODE ISSUE",
+    "affected_tests": ["com.example.TestClass.testNullPointer"],
+    "details": "The test is failing due to a null pointer dereference when initializing the User object. The code attempts to access user.getName() without checking if user is null.",
+    "code_fix": {
+      "file": "src/main/java/com/example/UserService.java",
+      "line": "42",
+      "change": "Add null check: if (user != null) { return user.getName(); } else { return \"Unknown\"; }"
+    }
+  }
+}
+```
+
+### Example - Product Bug
+
+```json
+{
+  "test_name": "com.example.api.TestUserEndpoint.testGetUser",
+  "error": "AssertionError: Expected 200 but got 500",
+  "analysis": {
+    "classification": "PRODUCT BUG",
+    "affected_tests": ["com.example.api.TestUserEndpoint.testGetUser"],
+    "details": "The API endpoint /api/users/{id} is returning a 500 Internal Server Error instead of successfully retrieving user data. This appears to be a regression in the user service.",
+    "product_bug_report": {
+      "title": "User API endpoint returns 500 error on valid requests",
+      "severity": "high",
+      "component": "user-service",
+      "description": "The GET /api/users/{id} endpoint fails with HTTP 500 when requesting valid user IDs. Expected behavior is to return HTTP 200 with user data.",
+      "evidence": "HTTP 500 Internal Server Error\nResponse: {\"error\": \"Database connection failed\"}",
+      "jira_search_keywords": ["user-service", "API", "500 error", "database"],
+      "jira_matches": [
+        {
+          "key": "PROJ-456",
+          "summary": "User service intermittently returns 500 errors",
+          "status": "Open",
+          "priority": "High",
+          "url": "https://example.atlassian.net/browse/PROJ-456",
+          "score": 0.85
+        }
+      ]
+    }
+  }
+}
+```

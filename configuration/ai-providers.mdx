@@ -1,0 +1,323 @@
+---
+title: AI Provider Setup
+description: Configure Claude, Gemini, or Cursor for Jenkins Job Insight analysis
+---
+
+Jenkins Job Insight uses AI CLI tools to analyze test failures. Choose your preferred provider and configure authentication.
+
+## Architecture
+
+The service uses a **CLI-based architecture** instead of direct SDK integrations:
+
+- **No SDK dependencies** - AI providers are called via subprocess
+- **Provider-agnostic** - Easy to add new AI CLIs
+- **Auth handled externally** - CLIs manage their own authentication
+- **Environment-driven** - `AI_PROVIDER` env var selects the provider
+
+<Note>
+  All AI providers use the same analysis workflow. The CLI interface is abstracted, so switching providers requires only changing configuration.
+</Note>
+
+## Choosing a Provider
+
+Set the `AI_PROVIDER` environment variable to select your provider:
+
+<Tabs>
+  <Tab title="Claude">
+    ```bash
+    AI_PROVIDER=claude
+    AI_MODEL=claude-opus-4-6[1m]
+    ```
+  </Tab>
+  
+  <Tab title="Gemini">
+    ```bash
+    AI_PROVIDER=gemini
+    AI_MODEL=gemini-pro
+    ```
+  </Tab>
+  
+  <Tab title="Cursor">
+    ```bash
+    AI_PROVIDER=cursor
+    AI_MODEL=claude-3.5-sonnet
+    ```
+  </Tab>
+</Tabs>
+
+## Claude CLI
+
+The Claude CLI (`claude`) supports two authentication methods.
+
+### Option 1: API Key (Recommended)
+
+Simplest method using direct Anthropic API key.
+
+```bash
+AI_PROVIDER=claude
+AI_MODEL=claude-opus-4-6[1m]
+ANTHROPIC_API_KEY=your-anthropic-api-key
+```
+
+**Docker Example:**
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=claude \
+  -e AI_MODEL=claude-opus-4-6[1m] \
+  -e ANTHROPIC_API_KEY=your-anthropic-api-key \
+  jenkins-job-insight
+```
+
+### Option 2: Vertex AI
+
+Use Google Cloud Vertex AI for Claude access.
+
+```bash
+AI_PROVIDER=claude
+AI_MODEL=claude-opus-4-6[1m]
+CLAUDE_CODE_USE_VERTEX=1
+CLOUD_ML_REGION=us-east5
+ANTHROPIC_VERTEX_PROJECT_ID=your-project-id
+```
+
+<Note>
+  Requires Google Cloud credentials configured in your environment. The Claude CLI reads these environment variables for Vertex authentication.
+</Note>
+
+**Docker Compose Example:**
+
+```yaml
+services:
+  jenkins-job-insight:
+    image: jenkins-job-insight
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - JENKINS_URL=https://jenkins.example.com
+      - JENKINS_USER=your-username
+      - JENKINS_PASSWORD=your-api-token
+      - AI_PROVIDER=claude
+      - AI_MODEL=claude-opus-4-6[1m]
+      - CLAUDE_CODE_USE_VERTEX=1
+      - CLOUD_ML_REGION=us-east5
+      - ANTHROPIC_VERTEX_PROJECT_ID=your-project-id
+```
+
+## Gemini CLI
+
+The Gemini CLI (`gemini`) supports API key and OAuth authentication.
+
+### Option 1: API Key
+
+```bash
+AI_PROVIDER=gemini
+AI_MODEL=gemini-pro
+GEMINI_API_KEY=your-gemini-api-key
+```
+
+**Docker Example:**
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=gemini \
+  -e AI_MODEL=gemini-pro \
+  -e GEMINI_API_KEY=your-gemini-api-key \
+  jenkins-job-insight
+```
+
+### Option 2: OAuth
+
+Authenticate using OAuth (requires one-time login).
+
+```bash
+AI_PROVIDER=gemini
+AI_MODEL=gemini-pro
+
+# Run once to authenticate
+gemini auth login
+```
+
+<Note>
+  No environment variable needed for OAuth. The CLI stores credentials locally after `gemini auth login`.
+</Note>
+
+**Docker OAuth Setup:**
+
+```bash
+# Start container
+docker run -d --name jji \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e AI_PROVIDER=gemini \
+  -e AI_MODEL=gemini-pro \
+  jenkins-job-insight
+
+# Authenticate inside container
+docker exec -it jji gemini auth login
+```
+
+## Cursor Agent CLI
+
+The Cursor Agent CLI (`agent`) provides AI-powered analysis with workspace awareness.
+
+### Option 1: API Key
+
+```bash
+AI_PROVIDER=cursor
+AI_MODEL=claude-3.5-sonnet
+CURSOR_API_KEY=your-cursor-api-key
+```
+
+**Docker Example:**
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=cursor \
+  -e AI_MODEL=claude-3.5-sonnet \
+  -e CURSOR_API_KEY=your-cursor-api-key \
+  jenkins-job-insight
+```
+
+### Option 2: Web Login (Docker)
+
+For web-based authentication inside a container:
+
+```bash
+# Start container
+docker run -d --name jji \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -e AI_PROVIDER=cursor \
+  -e AI_MODEL=claude-3.5-sonnet \
+  jenkins-job-insight
+
+# Authenticate inside container
+docker exec jji agent login
+```
+
+<Note>
+  Cursor Agent manages its own working directory, so repository context is passed via the `--workspace` flag.
+</Note>
+
+## Timeout Configuration
+
+Adjust the AI CLI timeout for slower models or complex analyses:
+
+```bash
+AI_CLI_TIMEOUT=15  # minutes (default: 10)
+```
+
+<Warning>
+  Ensure your timeout is sufficient for your chosen model. Large models analyzing complex failures may require 15+ minutes.
+</Warning>
+
+## Sanity Check
+
+Before processing analysis requests, Jenkins Job Insight performs a lightweight sanity check to verify the AI CLI is reachable. This catches misconfigured providers early without wasting API credits.
+
+```python
+# The service sends "Hi" to the AI CLI
+# Expects a successful response within 60 seconds
+```
+
+If the sanity check fails, the analysis returns an error:
+
+```json
+{
+  "status": "failed",
+  "summary": "CLAUDE (claude-opus-4-6[1m]) sanity check failed: Invalid API key"
+}
+```
+
+## Per-Request Override
+
+Override the AI provider and model for individual requests:
+
+```bash
+curl -X POST "http://localhost:8000/analyze?sync=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "my-project",
+    "build_number": 123,
+    "ai_provider": "gemini",
+    "ai_model": "gemini-pro",
+    "ai_cli_timeout": 15
+  }'
+```
+
+<Note>
+  Request values take precedence over environment variable defaults.
+</Note>
+
+## Adding a New Provider
+
+The CLI-based architecture makes it easy to add new AI providers. See the [Adding AI Providers](/guides/adding-ai-providers) guide for instructions on adding custom providers.
+
+**Steps:**
+1. Add command builder function in `analyzer.py`
+2. Register provider in `PROVIDER_CONFIG`
+3. Install CLI in Dockerfile
+4. Update environment variables documentation
+
+## Troubleshooting
+
+### Authentication Failures
+
+**Claude:**
+```
+CLAUDE (claude-opus-4-6[1m]) CLI error: Invalid API key
+```
+
+✅ **Solution:** Verify `ANTHROPIC_API_KEY` is set correctly or Vertex AI credentials are configured.
+
+**Gemini:**
+```
+GEMINI (gemini-pro) CLI error: Unauthorized
+```
+
+✅ **Solution:** Check `GEMINI_API_KEY` or run `gemini auth login` for OAuth.
+
+**Cursor:**
+```
+CURSOR (claude-3.5-sonnet) CLI error: Authentication required
+```
+
+✅ **Solution:** Set `CURSOR_API_KEY` or run `agent login` inside the container.
+
+### Timeout Issues
+
+```
+CLAUDE (claude-opus-4-6[1m]) CLI error: Analysis timed out after 10 minutes
+```
+
+✅ **Solution:** Increase `AI_CLI_TIMEOUT`:
+
+```bash
+AI_CLI_TIMEOUT=20  # Increase to 20 minutes
+```
+
+### Unknown Provider
+
+```
+Unknown AI provider: 'openai'. Valid providers: claude, gemini, cursor
+```
+
+✅ **Solution:** Use one of the supported providers or add a custom provider integration.

@@ -1,0 +1,127 @@
+---
+title: Introduction
+description: AI-powered analysis of Jenkins job failures to distinguish between code issues and product bugs
+---
+
+# Jenkins Job Insight
+
+A containerized webhook service that analyzes Jenkins job failures, classifies them as code issues or product bugs, and provides actionable suggestions. This service operates without a UI, receiving requests via webhooks and delivering results through callbacks.
+
+## What it does
+
+Jenkins Job Insight uses AI to analyze failed Jenkins builds and determine whether failures are caused by:
+
+- **Code issues**: Problems in test code such as incorrect assertions, setup issues, or flaky tests
+- **Product bugs**: Actual bugs in the product being tested that the tests correctly identified
+
+For each failure, the service provides detailed explanations and either fix suggestions (for code issues) or structured bug reports (for product bugs).
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="AI-powered classification" icon="brain">
+    Automatically distinguishes between test code issues and product bugs using Claude, Gemini, or Cursor AI providers
+  </Card>
+  
+  <Card title="Async and sync modes" icon="bolt">
+    Submit jobs for background processing or wait for immediate results via REST API
+  </Card>
+  
+  <Card title="Jira integration" icon="ticket">
+    Searches Jira for matching bugs on product failures with AI-powered relevance filtering to avoid duplicates
+  </Card>
+  
+  <Card title="HTML reports" icon="file">
+    Generate self-contained, dark-themed HTML failure reports viewable in any browser
+  </Card>
+  
+  <Card title="Direct failure analysis" icon="vial">
+    Analyze raw test failures without Jenkins via `/analyze-failures` endpoint
+  </Card>
+  
+  <Card title="JUnit XML enrichment" icon="code">
+    Enrich JUnit XML reports with AI analysis via pytest plugin or raw XML API
+  </Card>
+</CardGroup>
+
+## How it works
+
+<Steps>
+  <Step title="Receive request">
+    Accept webhook or API request containing the Jenkins job name and build number
+  </Step>
+  
+  <Step title="Fetch Jenkins data">
+    Retrieve console output and build information from your Jenkins instance
+  </Step>
+  
+  <Step title="Clone repository">
+    Optionally clone the test repository for additional code context
+  </Step>
+  
+  <Step title="AI analysis">
+    Send collected data to your configured AI provider (Claude, Gemini, or Cursor)
+  </Step>
+  
+  <Step title="Classify failures">
+    AI determines if each failure is a code issue or product bug with detailed explanations
+  </Step>
+  
+  <Step title="Search Jira (optional)">
+    For product bugs, search Jira for existing matching issues to avoid duplicates
+  </Step>
+  
+  <Step title="Store and deliver">
+    Save analysis to SQLite database and optionally deliver results via callback webhook
+  </Step>
+</Steps>
+
+## Analysis output example
+
+When you submit a failed Jenkins build for analysis, you receive structured results like this:
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "summary": "2 failure(s) analyzed",
+  "failures": [
+    {
+      "test_name": "test_user_login",
+      "error": "AssertionError: expected 200 but got 401",
+      "analysis": {
+        "classification": "PRODUCT BUG",
+        "details": "The authentication endpoint returns 401...",
+        "product_bug_report": {
+          "title": "Authentication endpoint rejects valid credentials",
+          "severity": "high",
+          "component": "auth-service",
+          "jira_matches": [
+            {
+              "key": "AUTH-456",
+              "summary": "Login fails with valid credentials",
+              "status": "Open"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+<Note>
+  The service is tied to a single Jenkins instance via the `JENKINS_URL` environment variable. All API requests specify only the job name and build number.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Get analyzing Jenkins failures in under 5 minutes
+  </Card>
+  
+  <Card title="Docker setup" icon="docker" href="/docker-setup">
+    Complete Docker installation and configuration guide
+  </Card>
+</CardGroup>

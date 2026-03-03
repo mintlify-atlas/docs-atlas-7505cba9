@@ -1,0 +1,342 @@
+---
+title: pytest JUnit XML Integration
+description: Automatically enrich pytest JUnit XML reports with AI failure analysis
+---
+
+Jenkins Job Insight includes a pytest integration that automatically enriches JUnit XML reports with AI-powered failure analysis. When your tests fail, the analysis is injected directly into the XML as structured properties.
+
+## How It Works
+
+<Steps>
+
+<Step title="Run pytest with JUnit XML output">
+Tests execute normally and pytest generates a JUnit XML report.
+</Step>
+
+<Step title="Extract failures from XML">
+The integration reads the XML file and extracts all test failures.
+</Step>
+
+<Step title="Send to JJI server for analysis">
+Raw XML is POSTed to the `/analyze-failures` endpoint for AI analysis.
+</Step>
+
+<Step title="Receive enriched XML">
+The server returns the same XML with AI analysis results injected as properties.
+</Step>
+
+<Step title="Overwrite original XML">
+The enriched XML replaces the original file, preserving all test data plus analysis.
+</Step>
+
+</Steps>
+
+## Setup
+
+### 1. Copy Integration Files
+
+The integration consists of two files from `examples/pytest-junitxml/`:
+
+```bash
+cp examples/pytest-junitxml/conftest_junit_ai.py conftest.py
+cp examples/pytest-junitxml/conftest_junit_ai_utils.py .
+```
+
+### 2. Install Dependencies
+
+```bash
+pip install requests python-dotenv
+```
+
+### 3. Configure Environment
+
+Create a `.env` file or set environment variables:
+
+```bash .env
+JJI_SERVER_URL=http://localhost:8000
+JJI_AI_PROVIDER=claude
+JJI_AI_MODEL=claude-sonnet-4-20250514
+JJI_TIMEOUT=600
+```
+
+<ParamField path="JJI_SERVER_URL" type="string" required>
+  Jenkins Job Insight server URL
+</ParamField>
+
+<ParamField path="JJI_AI_PROVIDER" type="string" default="claude">
+  AI provider: `claude`, `gemini`, or `cursor`
+</ParamField>
+
+<ParamField path="JJI_AI_MODEL" type="string" default="claude-opus-4-6[1m]">
+  AI model identifier
+</ParamField>
+
+<ParamField path="JJI_TIMEOUT" type="integer" default="600">
+  Request timeout in seconds
+</ParamField>
+
+## Usage
+
+Run pytest with the `--analyze-with-ai` flag:
+
+```bash
+pytest --junitxml=report.xml --analyze-with-ai
+```
+
+### When Tests Pass
+
+```bash
+$ pytest --junitxml=report.xml --analyze-with-ai
+============================= test session starts ==============================
+collected 10 items
+
+tests/test_api.py ..........                                             [100%]
+
+============================== 10 passed in 2.34s ===============================
+```
+
+No AI analysis runs. The XML contains only test results.
+
+### When Tests Fail
+
+```bash
+$ pytest --junitxml=report.xml --analyze-with-ai
+============================= test session starts ==============================
+collected 10 items
+
+tests/test_api.py ..F.F....F                                             [100%]
+
+=================================== FAILURES ===================================
+_________________________________ test_login ___________________________________
+...
+============================== 3 failed, 7 passed in 3.21s =====================
+INFO: Setting up AI-powered test failure analysis
+INFO: JUnit XML enriched with AI analysis: report.xml
+```
+
+The integration:
+1. Detects the 3 failures
+2. Sends XML to JJI server at `http://localhost:8000/analyze-failures`
+3. Receives AI analysis for each failure
+4. Writes enriched XML back to `report.xml`
+
+## Enriched XML Structure
+
+The AI analysis is injected as `<property>` elements under each failed `<testcase>`:
+
+```xml
+<testcase classname="tests.test_api" name="test_login" time="1.234">
+  <failure message="AssertionError: Invalid credentials">
+    Traceback (most recent call last):
+    ...
+  </failure>
+  
+  <properties>
+    <property name="ai_classification" value="CODE ISSUE"/>
+    <property name="ai_details" value="The test expects username 'admin' but the code validates against 'administrator'. This is a hardcoded credential mismatch."/>
+    <property name="ai_code_fix_file" value="src/auth.py"/>
+    <property name="ai_code_fix_line" value="45"/>
+    <property name="ai_code_fix_change" value="Change VALID_USERNAME from 'administrator' to 'admin'"/>
+  </properties>
+  
+  <system-out>
+Classification: CODE ISSUE
+
+The test expects username 'admin' but the code validates against 'administrator'.
+This is a hardcoded credential mismatch.
+
+Code Fix:
+  File: src/auth.py
+  Line: 45
+  Change: Change VALID_USERNAME from 'administrator' to 'admin'
+  </system-out>
+</testcase>
+```
+
+### Available Properties
+
+#### All Failures
+- `ai_classification`: Classification (CODE ISSUE or PRODUCT BUG)
+- `ai_details`: Detailed analysis text
+- `ai_affected_tests`: Comma-separated list of tests with same root cause
+
+#### Code Issues
+- `ai_code_fix_file`: File path to fix
+- `ai_code_fix_line`: Line number
+- `ai_code_fix_change`: Specific code change needed
+
+#### Product Bugs
+- `ai_bug_title`: Bug report title
+- `ai_bug_severity`: Severity (critical/high/medium/low)
+- `ai_bug_component`: Affected component
+- `ai_bug_description`: What product behavior is broken
+
+#### Jira Matches (when Jira integration is enabled)
+- `ai_jira_match_0_key`: Jira issue key (e.g., PROJ-123)
+- `ai_jira_match_0_summary`: Issue summary
+- `ai_jira_match_0_status`: Issue status
+- `ai_jira_match_0_url`: Direct link to issue
+- `ai_jira_match_0_priority`: Issue priority
+- `ai_jira_match_0_score`: Relevance score (0-100)
+
+## Implementation Reference
+
+The pytest integration is implemented in two files:
+
+### conftest.py Hook Implementation
+
+```python examples/pytest-junitxml/conftest_junit_ai.py:43-67
+def pytest_sessionstart(session):
+    """Set up AI analysis if --analyze-with-ai is passed."""
+    if session.config.option.analyze_with_ai:
+        setup_ai_analysis(session)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Enrich JUnit XML with AI analysis when tests fail.
+
+    Only runs when exitstatus indicates test failures (exit code != 0).
+    Skips enrichment when all tests pass or execution was interrupted.
+    """
+    if session.config.option.analyze_with_ai:
+        if exitstatus == 0:
+            logger.info(
+                "No test failures (exit code %d), skipping AI analysis", exitstatus
+            )
+
+        else:
+            try:
+                enrich_junit_xml(session)
+            except Exception:
+                logger.exception("Failed to enrich JUnit XML, original preserved")
+```
+
+### Server Communication
+
+```python examples/pytest-junitxml/conftest_junit_ai_utils.py:53-116
+def enrich_junit_xml(session) -> None:
+    """Read JUnit XML, send to server for analysis, write enriched XML back."""
+    xml_path_raw = getattr(session.config.option, "xmlpath", None)
+    if not xml_path_raw:
+        logger.warning(
+            "xunit file not found; pass --junitxml. Skipping AI analysis enrichment"
+        )
+        return
+
+    xml_path = Path(xml_path_raw)
+    if not xml_path.exists():
+        logger.warning(
+            "xunit file not found under %s. Skipping AI analysis enrichment",
+            xml_path_raw,
+        )
+        return
+
+    ai_provider = os.environ.get("JJI_AI_PROVIDER")
+    ai_model = os.environ.get("JJI_AI_MODEL")
+    server_url = os.environ["JJI_SERVER_URL"]
+    raw_xml = xml_path.read_text()
+
+    try:
+        timeout_value = int(os.environ.get("JJI_TIMEOUT", "600"))
+    except ValueError:
+        timeout_value = 600
+
+    try:
+        response = requests.post(
+            f"{server_url.rstrip('/')}/analyze-failures",
+            json={
+                "raw_xml": raw_xml,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+            },
+            timeout=timeout_value,
+        )
+        response.raise_for_status()
+        result = response.json()
+    except Exception as ex:
+        logger.exception(f"Failed to enrich JUnit XML, original preserved. {ex}")
+        return
+
+    if enriched_xml := result.get("enriched_xml"):
+        xml_path.write_text(enriched_xml)
+        logger.info("JUnit XML enriched with AI analysis: %s", xml_path)
+```
+
+## Reading Analysis from CI Tools
+
+Most CI tools parse JUnit XML properties automatically. You can access the AI analysis in your CI pipelines:
+
+### Jenkins
+
+```groovy Jenkinsfile
+post {
+    always {
+        junit 'report.xml'
+        
+        script {
+            def report = readFile('report.xml')
+            if (report.contains('ai_classification')) {
+                echo "AI analysis available in test report"
+            }
+        }
+    }
+}
+```
+
+### GitHub Actions
+
+```yaml .github/workflows/test.yml
+- name: Run tests with AI analysis
+  run: pytest --junitxml=report.xml --analyze-with-ai
+  env:
+    JJI_SERVER_URL: ${{ secrets.JJI_SERVER_URL }}
+    JJI_AI_PROVIDER: claude
+    JJI_AI_MODEL: claude-sonnet-4-20250514
+
+- name: Upload test results
+  uses: actions/upload-artifact@v3
+  if: always()
+  with:
+    name: junit-results
+    path: report.xml
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="AI analysis not running">
+**Check:**
+- `JJI_SERVER_URL` is set and reachable
+- `--analyze-with-ai` flag is passed
+- Tests actually failed (exit code != 0)
+- `--junitxml` path is correct
+
+**Debug:**
+```bash
+pytest --junitxml=report.xml --analyze-with-ai -v --log-cli-level=INFO
+```
+</Accordion>
+
+<Accordion title="Connection timeout">
+AI analysis can take several minutes for complex failures. Increase `JJI_TIMEOUT`:
+
+```bash
+export JJI_TIMEOUT=900  # 15 minutes
+pytest --junitxml=report.xml --analyze-with-ai
+```
+</Accordion>
+
+<Accordion title="Original XML preserved on error">
+If server communication fails, the integration preserves the original XML and logs the error:
+
+```
+ERROR: Failed to enrich JUnit XML, original preserved
+requests.exceptions.ConnectionError: Failed to connect to http://localhost:8000
+```
+
+Your test results are never lost.
+</Accordion>
+
+</AccordionGroup>

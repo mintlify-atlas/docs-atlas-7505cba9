@@ -1,0 +1,478 @@
+---
+title: Adding AI Providers
+description: Extend Jenkins Job Insight with new AI CLI providers
+---
+
+Jenkins Job Insight uses AI CLI tools (Claude CLI, Gemini CLI, Cursor Agent) instead of direct SDK integrations. This makes it easy to add support for new AI providers.
+
+## Architecture
+
+The service calls AI providers via subprocess, not SDKs:
+
+- **No SDK dependencies**: AI providers are called via subprocess
+- **Provider-agnostic**: Easy to add new AI CLIs
+- **Auth handled externally**: CLIs manage their own authentication
+- **Environment-driven**: `AI_PROVIDER` env var selects the provider
+
+## Provider Configuration
+
+All AI providers are configured in `PROVIDER_CONFIG` (analyzer.py:125-131):
+
+```python analyzer.py:101-134
+@dataclass(frozen=True)
+class ProviderConfig:
+    """Configuration for an AI CLI provider."""
+
+    binary: str
+    build_cmd: Callable[[str, str, Path | None], list[str]]
+    uses_own_cwd: bool = False
+
+
+def _build_claude_cmd(binary: str, model: str, _cwd: Path | None) -> list[str]:
+    return [binary, "--model", model, "--dangerously-skip-permissions", "-p"]
+
+
+def _build_gemini_cmd(binary: str, model: str, _cwd: Path | None) -> list[str]:
+    return [binary, "--model", model, "--yolo"]
+
+
+def _build_cursor_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    cmd = [binary, "--force", "--model", model, "--print"]
+    if cwd:
+        cmd.extend(["--workspace", str(cwd)])
+    return cmd
+
+
+PROVIDER_CONFIG: dict[str, ProviderConfig] = {
+    "claude": ProviderConfig(binary="claude", build_cmd=_build_claude_cmd),
+    "gemini": ProviderConfig(binary="gemini", build_cmd=_build_gemini_cmd),
+    "cursor": ProviderConfig(
+        binary="agent", uses_own_cwd=True, build_cmd=_build_cursor_cmd
+    ),
+}
+
+VALID_AI_PROVIDERS = set(PROVIDER_CONFIG.keys())
+```
+
+## Adding a New Provider
+
+Follow these steps to add a new AI CLI provider:
+
+<Steps>
+
+<Step title="Create command builder function">
+Define a function that builds the CLI command:
+
+```python
+def _build_openai_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    """Build command for OpenAI CLI.
+    
+    Args:
+        binary: The CLI binary name (e.g., "openai")
+        model: Model identifier (e.g., "gpt-4")
+        cwd: Working directory (repository path for code context)
+    
+    Returns:
+        List of command arguments
+    """
+    return [binary, "--model", model, "--stream"]
+```
+
+**Requirements:**
+- Function must accept `(binary: str, model: str, cwd: Path | None)`
+- Must return `list[str]` (command arguments)
+- Binary receives prompt via stdin
+- Binary must write response to stdout
+- Binary must exit with code 0 on success
+</Step>
+
+<Step title="Add to PROVIDER_CONFIG">
+Register your provider in the `PROVIDER_CONFIG` dictionary:
+
+```python
+PROVIDER_CONFIG: dict[str, ProviderConfig] = {
+    "claude": ProviderConfig(binary="claude", build_cmd=_build_claude_cmd),
+    "gemini": ProviderConfig(binary="gemini", build_cmd=_build_gemini_cmd),
+    "cursor": ProviderConfig(
+        binary="agent", uses_own_cwd=True, build_cmd=_build_cursor_cmd
+    ),
+    "openai": ProviderConfig(binary="openai", build_cmd=_build_openai_cmd),
+}
+```
+
+**ProviderConfig fields:**
+- `binary`: CLI binary name (must be in PATH)
+- `build_cmd`: Your command builder function
+- `uses_own_cwd`: Set to `True` if CLI handles `cwd` via its own flag (like Cursor's `--workspace`)
+</Step>
+
+<Step title="Test the provider">
+Verify your provider works:
+
+```bash
+# Set provider and model
+export AI_PROVIDER=openai
+export AI_MODEL=gpt-4
+
+# Test analysis
+curl -X POST http://localhost:8000/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "test-pipeline",
+    "build_number": 123,
+    "ai_provider": "openai",
+    "ai_model": "gpt-4"
+  }'
+```
+</Step>
+
+<Step title="Document authentication">
+Update documentation with provider-specific auth setup:
+
+1. Install the CLI
+2. Authenticate with the provider
+3. Configure environment variables for Jenkins Job Insight
+
+Example authentication documentation structure:
+
+- Installation instructions
+- Authentication steps (API key, OAuth, or web login)
+- Environment variable configuration
+- Testing the CLI connection
+</Step>
+
+</Steps>
+
+## CLI Interface Contract
+
+Your AI CLI must implement this interface:
+
+### Input
+
+The CLI receives a prompt via **stdin**:
+
+```python analyzer.py:520-532
+try:
+    result = await asyncio.to_thread(
+        subprocess.run,
+        cmd,
+        cwd=subprocess_cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        input=prompt,  # Prompt sent to stdin
+    )
+except subprocess.TimeoutExpired:
+    return (
+        False,
+        f"{provider_info} CLI error: Analysis timed out after {effective_timeout} minutes",
+    )
+```
+
+### Output
+
+The CLI must write the response to **stdout** as JSON:
+
+```json
+{
+  "classification": "CODE ISSUE",
+  "affected_tests": ["test_name_1", "test_name_2"],
+  "details": "Your detailed analysis of what caused this failure",
+  "code_fix": {
+    "file": "exact/file/path.py",
+    "line": "line number",
+    "change": "specific code change that fixes all affected tests"
+  }
+}
+```
+
+Or for product bugs:
+
+```json
+{
+  "classification": "PRODUCT BUG",
+  "affected_tests": ["test_name_1", "test_name_2"],
+  "details": "Your detailed analysis of what caused this failure",
+  "product_bug_report": {
+    "title": "concise bug title",
+    "severity": "critical/high/medium/low",
+    "component": "affected component",
+    "description": "what product behavior is broken",
+    "evidence": "relevant log snippets",
+    "jira_search_keywords": ["keyword1", "keyword2", "keyword3"]
+  }
+}
+```
+
+### Exit Code
+
+The CLI must:
+- Exit with **0** on success
+- Exit with **non-zero** on error
+- Write error messages to **stderr**
+
+```python analyzer.py:539-541
+if result.returncode != 0:
+    error_detail = result.stderr or result.stdout or "unknown error (no output)"
+    return False, f"{provider_info} CLI error: {error_detail}"
+```
+
+## Response Parsing
+
+The service parses AI responses using multiple strategies (analyzer.py:179-223):
+
+<Steps>
+
+<Step title="Direct JSON parsing">
+Try parsing raw text as JSON:
+
+```python analyzer.py:202-207
+if text.startswith("{"):
+    try:
+        data = json.loads(text)
+        return AnalysisDetail(**data)
+    except Exception:
+        pass
+```
+</Step>
+
+<Step title="Brace matching extraction">
+Find outermost `{...}` by tracking nesting depth:
+
+```python analyzer.py:209-212
+result = _extract_json_by_braces(text)
+if result is not None:
+    return result
+```
+</Step>
+
+<Step title="Markdown code block extraction">
+Extract from ` ```json ` or ` ``` ` blocks:
+
+```python analyzer.py:214-217
+result = _extract_json_from_code_blocks(text)
+if result is not None:
+    return result
+```
+</Step>
+
+<Step title="Regex field recovery">
+As last resort, extract fields via regex:
+
+```python analyzer.py:220-222
+fallback = AnalysisDetail(details=raw_text)
+return _recover_from_details(fallback)
+```
+</Step>
+
+</Steps>
+
+This tolerates:
+- Markdown code blocks around JSON
+- Extra text before/after JSON
+- Embedded code blocks in string values
+- Formatting quirks from different AI models
+
+## Working Directory Handling
+
+Some CLIs need the repository path passed differently:
+
+### Standard (Claude, Gemini)
+
+Pass `cwd` to subprocess:
+
+```python
+subprocess_cwd = cwd  # Repository path
+cmd = ["claude", "--model", model, "-p"]
+```
+
+### Custom Flag (Cursor)
+
+CLI handles `cwd` via its own flag:
+
+```python
+PROVIDER_CONFIG = {
+    "cursor": ProviderConfig(
+        binary="agent",
+        uses_own_cwd=True,  # Tell service not to set subprocess cwd
+        build_cmd=_build_cursor_cmd
+    ),
+}
+
+def _build_cursor_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    cmd = [binary, "--force", "--model", model, "--print"]
+    if cwd:
+        cmd.extend(["--workspace", str(cwd)])  # Custom flag
+    return cmd
+```
+
+Set `uses_own_cwd=True` if your CLI needs this pattern.
+
+## Sanity Check
+
+Before spawning parallel analysis tasks, the service verifies the CLI works:
+
+```python analyzer.py:426-478
+async def check_ai_cli_available(ai_provider: str, ai_model: str) -> tuple[bool, str]:
+    """Run a lightweight sanity check to verify the AI CLI is reachable.
+
+    Sends a trivial prompt ("Hi") to the configured provider and returns
+    whether the CLI responded successfully.  This should be called once
+    before spawning parallel analysis tasks so that a misconfigured
+    provider is caught early without wasting API credits.
+    """
+    config = PROVIDER_CONFIG.get(ai_provider)
+    if not config:
+        return (
+            False,
+            f"Unknown AI provider: '{ai_provider}'. Valid providers: {', '.join(sorted(VALID_AI_PROVIDERS))}",
+        )
+
+    if not ai_model:
+        return (
+            False,
+            "No AI model configured. Set AI_MODEL env var or pass ai_model in request body.",
+        )
+
+    provider_info = f"{ai_provider.upper()} ({ai_model})"
+    sanity_cmd = config.build_cmd(config.binary, ai_model, None)
+
+    try:
+        sanity_result = await asyncio.to_thread(
+            subprocess.run,
+            sanity_cmd,
+            cwd=None,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            input="Hi",
+        )
+        if sanity_result.returncode != 0:
+            error_detail = (
+                sanity_result.stderr
+                or sanity_result.stdout
+                or "unknown error (no output)"
+            )
+            return False, f"{provider_info} sanity check failed: {error_detail}"
+    except subprocess.TimeoutExpired:
+        return False, f"{provider_info} sanity check timed out"
+
+    return True, ""
+```
+
+Your CLI must respond to `"Hi"` within 60 seconds.
+
+## Example: Adding Anthropic Claude Desktop
+
+Here's a complete example adding Anthropic's Claude Desktop CLI:
+
+```python
+# 1. Command builder
+def _build_claude_desktop_cmd(binary: str, model: str, cwd: Path | None) -> list[str]:
+    """Build command for Claude Desktop CLI."""
+    return [binary, "--model", model, "--json"]
+
+# 2. Register in PROVIDER_CONFIG
+PROVIDER_CONFIG: dict[str, ProviderConfig] = {
+    "claude": ProviderConfig(binary="claude", build_cmd=_build_claude_cmd),
+    "gemini": ProviderConfig(binary="gemini", build_cmd=_build_gemini_cmd),
+    "cursor": ProviderConfig(
+        binary="agent", uses_own_cwd=True, build_cmd=_build_cursor_cmd
+    ),
+    "claude-desktop": ProviderConfig(
+        binary="claude-desktop",
+        build_cmd=_build_claude_desktop_cmd
+    ),
+}
+
+VALID_AI_PROVIDERS = set(PROVIDER_CONFIG.keys())
+```
+
+```bash
+# 3. Test
+export AI_PROVIDER=claude-desktop
+export AI_MODEL=claude-3.5-sonnet
+python -m jenkins_job_insight.main
+
+# 4. Use
+curl -X POST http://localhost:8000/analyze \
+  -d '{"job_name": "test", "build_number": 1, "ai_provider": "claude-desktop"}'
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="Unknown AI provider error">
+Verify your provider is in `VALID_AI_PROVIDERS`:
+
+```python
+VALID_AI_PROVIDERS = set(PROVIDER_CONFIG.keys())
+```
+
+The key in `PROVIDER_CONFIG` is the provider name users pass via `AI_PROVIDER` or `ai_provider` in requests.
+</Accordion>
+
+<Accordion title="CLI not found">
+Ensure the binary is in PATH:
+
+```bash
+which claude  # Should print path to binary
+```
+
+Or use an absolute path:
+
+```python
+ProviderConfig(
+    binary="/usr/local/bin/my-ai-cli",
+    build_cmd=_build_my_cmd
+)
+```
+</Accordion>
+
+<Accordion title="Timeout errors">
+Increase timeout for slower models:
+
+```bash
+export AI_CLI_TIMEOUT=20  # 20 minutes
+```
+
+Or pass per-request:
+
+```json
+{
+  "job_name": "test",
+  "build_number": 1,
+  "ai_cli_timeout": 20
+}
+```
+</Accordion>
+
+<Accordion title="JSON parsing failures">
+The parser handles many edge cases, but if your CLI outputs unusual JSON:
+
+1. Check stderr for error messages
+2. Test with simple prompt: `echo "Hi" | your-cli --model model-name`
+3. Verify JSON structure matches the schema
+4. Look for unescaped newlines in string values
+
+The parser will log warnings and attempt recovery:
+
+```
+WARNING: Recovered classification 'CODE ISSUE' from unparseable AI response via regex extraction
+```
+</Accordion>
+
+</AccordionGroup>
+
+## Contributing
+
+When adding a provider, please:
+
+1. Test with real Jenkins failures
+2. Document authentication steps
+3. Add example to README.md
+4. Update this guide
+5. Submit a PR with your changes
+
+Refer to the [Architecture: CLI-Based AI](/architecture/cli-based-ai) documentation for more architectural details.

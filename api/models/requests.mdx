@@ -1,0 +1,233 @@
+---
+title: "Request Models"
+description: "Request model schemas for Jenkins Job Insight API"
+---
+
+## BaseAnalysisRequest
+
+Shared fields for all analysis request types. This is the base model inherited by `AnalyzeRequest` and `AnalyzeFailuresRequest`.
+
+<ParamField path="tests_repo_url" type="HttpUrl" optional>
+  URL of the tests repository (overrides env var default)
+</ParamField>
+
+<ParamField path="ai_provider" type="Literal['claude', 'gemini', 'cursor']" optional>
+  AI provider to use: claude, gemini, or cursor (overrides env var default)
+</ParamField>
+
+<ParamField path="ai_model" type="string" optional>
+  AI model to use (overrides env var default)
+</ParamField>
+
+<ParamField path="enable_jira" type="boolean" optional>
+  Enable Jira bug search (default: true when Jira is configured, set false to skip)
+</ParamField>
+
+<ParamField path="ai_cli_timeout" type="integer" optional>
+  AI CLI timeout in minutes (overrides AI_CLI_TIMEOUT env var)
+  
+  **Validation**: Must be greater than 0
+</ParamField>
+
+<ParamField path="jira_url" type="string" optional>
+  Jira instance URL (overrides JIRA_URL env var)
+</ParamField>
+
+<ParamField path="jira_email" type="string" optional>
+  Jira Cloud email (overrides JIRA_EMAIL env var)
+</ParamField>
+
+<ParamField path="jira_api_token" type="string" optional>
+  Jira Cloud API token (overrides JIRA_API_TOKEN env var)
+  
+  **Format**: password
+</ParamField>
+
+<ParamField path="jira_pat" type="string" optional>
+  Jira Server/DC personal access token (overrides JIRA_PAT env var)
+  
+  **Format**: password
+</ParamField>
+
+<ParamField path="jira_project_key" type="string" optional>
+  Jira project key to scope searches (overrides JIRA_PROJECT_KEY env var)
+</ParamField>
+
+<ParamField path="jira_ssl_verify" type="boolean" optional>
+  Jira SSL verification (overrides JIRA_SSL_VERIFY env var)
+</ParamField>
+
+<ParamField path="jira_max_results" type="integer" optional>
+  Max Jira search results (overrides JIRA_MAX_RESULTS env var)
+  
+  **Validation**: Must be greater than 0
+</ParamField>
+
+### Example
+
+```json
+{
+  "tests_repo_url": "https://github.com/example/tests",
+  "ai_provider": "claude",
+  "ai_model": "claude-3-5-sonnet-20241022",
+  "enable_jira": true,
+  "ai_cli_timeout": 30,
+  "jira_url": "https://example.atlassian.net",
+  "jira_email": "user@example.com",
+  "jira_api_token": "your-api-token",
+  "jira_project_key": "PROJ",
+  "jira_ssl_verify": true,
+  "jira_max_results": 10
+}
+```
+
+---
+
+## AnalyzeRequest
+
+Request payload for the analysis endpoint. Extends `BaseAnalysisRequest` with Jenkins-specific fields.
+
+<ParamField path="job_name" type="string" required>
+  Jenkins job name (can include folders like 'folder/job-name')
+</ParamField>
+
+<ParamField path="build_number" type="integer" required>
+  Build number to analyze
+</ParamField>
+
+<ParamField path="callback_url" type="HttpUrl" optional>
+  Optional callback URL for async results (overrides env var default)
+</ParamField>
+
+<ParamField path="callback_headers" type="object" optional>
+  Optional headers to include in callback request (overrides env var default)
+  
+  <Expandable title="Object Schema">
+    Dictionary of header name to header value pairs
+    
+    ```json
+    {
+      "Authorization": "Bearer token",
+      "X-Custom-Header": "value"
+    }
+    ```
+  </Expandable>
+</ParamField>
+
+<ParamField path="jenkins_url" type="string" optional>
+  Jenkins server URL (overrides JENKINS_URL env var)
+</ParamField>
+
+<ParamField path="jenkins_user" type="string" optional>
+  Jenkins username (overrides JENKINS_USER env var)
+</ParamField>
+
+<ParamField path="jenkins_password" type="string" optional>
+  Jenkins password or API token (overrides JENKINS_PASSWORD env var)
+  
+  **Format**: password
+</ParamField>
+
+<ParamField path="jenkins_ssl_verify" type="boolean" optional>
+  Jenkins SSL verification (overrides JENKINS_SSL_VERIFY env var)
+</ParamField>
+
+<Note>
+  This model inherits all fields from `BaseAnalysisRequest`, so all Jira and AI configuration fields are also available.
+</Note>
+
+### Example
+
+```json
+{
+  "job_name": "frontend/build-pipeline",
+  "build_number": 42,
+  "callback_url": "https://example.com/webhook/results",
+  "callback_headers": {
+    "Authorization": "Bearer secret-token"
+  },
+  "jenkins_url": "https://jenkins.example.com",
+  "jenkins_user": "admin",
+  "jenkins_password": "api-token-here",
+  "jenkins_ssl_verify": true,
+  "tests_repo_url": "https://github.com/example/tests",
+  "ai_provider": "claude",
+  "enable_jira": true
+}
+```
+
+---
+
+## AnalyzeFailuresRequest
+
+Request payload for direct failure analysis (no Jenkins integration). Extends `BaseAnalysisRequest`.
+
+<ParamField path="failures" type="array" optional>
+  Raw test failures to analyze
+  
+  <Expandable title="TestFailure Schema">
+    <ParamField path="test_name" type="string" required>
+      Fully qualified test name (className.methodName)
+    </ParamField>
+    
+    <ParamField path="error_message" type="string" default="">
+      Error details/message
+    </ParamField>
+    
+    <ParamField path="stack_trace" type="string" default="">
+      Full stack trace if available
+    </ParamField>
+    
+    <ParamField path="duration" type="number" default={0.0}>
+      Test duration in seconds
+    </ParamField>
+    
+    <ParamField path="status" type="string" default="FAILED">
+      Test status (FAILED, REGRESSION, etc.)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="raw_xml" type="string" optional>
+  Raw JUnit XML content to extract failures from and enrich with analysis results
+  
+  **Validation**: Maximum length of 50,000,000 characters
+</ParamField>
+
+<Note>
+  This model inherits all fields from `BaseAnalysisRequest`, so all Jira and AI configuration fields are also available.
+</Note>
+
+<Warning>
+  **Validation Rules**:
+  - Provide either `failures` or `raw_xml`, not both
+  - At least one of `failures` or `raw_xml` must be provided
+</Warning>
+
+### Example with failures array
+
+```json
+{
+  "failures": [
+    {
+      "test_name": "com.example.TestClass.testMethod",
+      "error_message": "AssertionError: Expected 200 but got 500",
+      "stack_trace": "AssertionError: Expected 200 but got 500\n  at TestClass.testMethod(TestClass.java:42)",
+      "duration": 1.5,
+      "status": "FAILED"
+    }
+  ],
+  "ai_provider": "gemini",
+  "enable_jira": true
+}
+```
+
+### Example with raw XML
+
+```json
+{
+  "raw_xml": "<?xml version='1.0' encoding='UTF-8'?>\n<testsuites>...</testsuites>",
+  "tests_repo_url": "https://github.com/example/tests",
+  "ai_provider": "cursor"
+}
+```

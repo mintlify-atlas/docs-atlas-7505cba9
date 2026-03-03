@@ -1,0 +1,140 @@
+---
+title: 'GET /health'
+description: 'Health check and monitoring endpoints'
+---
+
+Monitor service health and access the dashboard UI.
+
+## Health Check
+
+Simple health check endpoint for monitoring and load balancers.
+
+### Endpoint
+
+```
+GET /health
+```
+
+### Response (200 OK)
+
+<ResponseField name="status" type="string">
+  Always returns `"healthy"` when the service is running.
+</ResponseField>
+
+### Example
+
+```bash
+curl https://your-instance.com/health
+```
+
+**Response:**
+
+```json
+{
+  "status": "healthy"
+}
+```
+
+### Use Cases
+
+- **Load Balancer:** Configure as a health probe
+- **Monitoring:** Uptime checks and alerting
+- **CI/CD:** Verify deployment readiness
+- **Docker/Kubernetes:** Liveness and readiness probes
+
+### Example Kubernetes Probe
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
+## Dashboard
+
+Web-based dashboard for viewing analysis reports.
+
+### Endpoint
+
+```
+GET /dashboard
+```
+
+### Query Parameters
+
+<ParamField query="limit" type="integer" default="500">
+  Maximum number of jobs to load from the database (1-10,000).
+</ParamField>
+
+### Response
+
+Returns HTML content with `Content-Type: text/html`.
+
+The dashboard displays:
+- List of recent analysis jobs
+- Job metadata (Jenkins URL, timestamps, status)
+- Links to JSON results and HTML reports
+- Real-time status updates
+- Search and filter capabilities
+- Pagination controls
+
+### Example
+
+```bash
+curl https://your-instance.com/dashboard
+```
+
+Open in browser:
+```
+https://your-instance.com/dashboard
+```
+
+**Load more jobs:**
+```
+https://your-instance.com/dashboard?limit=1000
+```
+
+### Features
+
+- **Status Indicators:** Visual badges for pending/running/completed/failed jobs
+- **Quick Access:** Direct links to JSON and HTML reports
+- **Time Information:** Created and updated timestamps
+- **Jenkins Integration:** Links to original Jenkins builds
+- **Responsive Design:** Works on desktop and mobile devices
+
+## Favicon
+
+Serve the application favicon.
+
+### Endpoint
+
+```
+GET /favicon.ico
+```
+
+### Response
+
+Returns SVG image with `Content-Type: image/svg+xml`.
+
+Cached for 24 hours (`Cache-Control: public, max-age=86400`).
+
+### Example
+
+```bash
+curl https://your-instance.com/favicon.ico
+```
+
+## See Also
+
+- [POST /analyze](/api/analyze) - Submit analysis jobs
+- [GET /results](/api/results) - Retrieve analysis results

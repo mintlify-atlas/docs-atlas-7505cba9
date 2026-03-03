@@ -1,0 +1,447 @@
+---
+title: Failure Deduplication
+description: How Jenkins Job Insight groups identical failures to minimize AI calls
+---
+
+## Overview
+
+When multiple tests fail with the **same underlying error**, Jenkins Job Insight groups them together and analyzes them **once**. This dramatically reduces:
+
+- AI API calls (cost savings)
+- Analysis time (parallel efficiency)
+- Output verbosity (clarity)
+
+## The Problem
+
+Consider a broken API endpoint that causes 50 tests to fail:
+
+```python
+test_user_login() ❌ ConnectionRefusedError: [Errno 111]
+test_user_logout() ❌ ConnectionRefusedError: [Errno 111]
+test_user_profile() ❌ ConnectionRefusedError: [Errno 111]
+# ... 47 more identical failures
+```
+
+**Without deduplication:**
+- 50 separate AI CLI calls
+- 50 redundant analyses saying "API server is down"
+- Wasted time and API credits
+
+**With deduplication:**
+- 1 AI CLI call for the group
+- 1 analysis applied to all 50 tests
+- Result: "50 tests failed due to ConnectionRefusedError (1 unique error)"
+
+## Implementation
+
+### Step 1: Signature Generation
+
+**analyzer.py:136-152** — `get_failure_signature()`:
+
+```python
+def get_failure_signature(failure: TestFailure) -> str:
+    """Create a signature for grouping identical failures.
+
+    Uses error message and first few lines of stack trace to identify
+    failures that are essentially the same issue.
+    """
+    # Use error message and first 5 lines of stack trace
+    stack_lines = failure.stack_trace.split("\n")[:5]
+    signature_text = f"{failure.error_message}|{'|'.join(stack_lines)}"
+    return hashlib.sha256(signature_text.encode()).hexdigest()
+```
+
+**Why first 5 stack trace lines?**
+- Captures the unique call path to the error
+- Ignores test-specific frames higher in the stack
+- Balances precision vs. over-grouping
+
+**Why SHA-256 hash?**
+- Consistent signature regardless of message length
+- Dictionary key for grouping
+- No collision risk for practical purposes
+
+<Note>
+The signature uses **error message + stack trace**, not test name. Tests with different names but identical errors are grouped together.
+</Note>
+
+### Step 2: Grouping Failures
+
+**analyzer.py:1286-1293** (in `analyze_job()`):
+
+```python
+# Group failures by signature to avoid analyzing identical errors multiple times
+failure_groups: dict[str, list[TestFailure]] = defaultdict(list)
+for tf in test_failures:
+    sig = get_failure_signature(tf)
+    failure_groups[sig].append(tf)
+
+unique_errors = len(failure_groups)
+logger.info(
+    f"Grouped {len(test_failures)} failures into {unique_errors} unique error types"
+)
+```
+
+**Data structure:**
+```python
+failure_groups = {
+    "a3f5d8e...": [test1, test2, test3],  # ConnectionRefusedError group
+    "9b2c1f7...": [test4, test5],         # AssertionError group
+    "c4e6a9d...": [test6],                # Unique timeout
+}
+```
+
+### Step 3: Parallel Analysis of Unique Groups
+
+**analyzer.py:1296-1327** (in `analyze_job()`):
+
+```python
+# Analyze each unique failure group in parallel
+failure_tasks = [
+    analyze_failure_group(
+        failures=group,
+        console_context=console_context,
+        repo_path=repo_path,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        ai_cli_timeout=settings.ai_cli_timeout,
+    )
+    for group in failure_groups.values()
+]
+group_results = await run_parallel_with_limit(failure_tasks)
+
+# Flatten results and handle exceptions
+failures = []
+group_list = list(failure_groups.values())
+for i, result in enumerate(group_results):
+    if isinstance(result, Exception):
+        # Create error entries for all failures in this group
+        for tf in group_list[i]:
+            failures.append(
+                FailureAnalysis(
+                    test_name=tf.test_name,
+                    error=tf.error_message,
+                    analysis=AnalysisDetail(
+                        details=f"Analysis failed: {result}"
+                    ),
+                )
+            )
+    else:
+        failures.extend(result)
+```
+
+<Info>
+Groups are analyzed **in parallel** (bounded by `MAX_CONCURRENT_AI_CALLS = 10`). If one group analysis fails, others continue.
+</Info>
+
+### Step 4: Group Analysis Implementation
+
+**analyzer.py:781-854** — `analyze_failure_group()`:
+
+```python
+async def analyze_failure_group(
+    failures: list[TestFailure],
+    console_context: str,
+    repo_path: Path | None,
+    ai_provider: str = "",
+    ai_model: str = "",
+    ai_cli_timeout: int | None = None,
+) -> list[FailureAnalysis]:
+    """Analyze a group of failures with the same error signature.
+
+    Only calls Claude CLI once for the group, then applies the analysis
+    to all failures in the group.
+    """
+    # Use the first failure as representative
+    representative = failures[0]
+    test_names = [f.test_name for f in failures]
+
+    prompt = f"""Analyze this test failure from a Jenkins CI job.
+
+AFFECTED TESTS ({len(failures)} tests with same error):
+{chr(10).join(f"- {name}" for name in test_names)}
+
+ERROR: {representative.error_message}
+STACK TRACE:
+{representative.stack_trace}
+
+CONSOLE CONTEXT:
+{console_context}
+
+You have access to the test repository. Explore the code to understand the failure.
+
+Note: Multiple tests failed with the same error. Provide ONE analysis that applies to all of them.
+
+{_JSON_RESPONSE_SCHEMA}
+"""
+```
+
+**Key design decisions:**
+
+1. **Single representative** — First failure provides error + stack trace
+2. **All test names listed** — AI sees full scope of impact
+3. **One AI call** — Prompt explicitly requests unified analysis
+4. **Same analysis replicated** — Applied to all failures in group (analyzer.py:846-853)
+
+```python
+# Apply the same analysis to all failures in the group
+return [
+    FailureAnalysis(
+        test_name=f.test_name,
+        error=f.error_message,
+        analysis=parsed,
+    )
+    for f in failures
+]
+```
+
+## Real-World Example
+
+### Input: 12 Test Failures
+
+```json
+[
+  {"test_name": "test_vm_start", "error": "Timeout waiting for VM", "stack": "...line 45..."},
+  {"test_name": "test_vm_stop", "error": "Timeout waiting for VM", "stack": "...line 45..."},
+  {"test_name": "test_vm_restart", "error": "Timeout waiting for VM", "stack": "...line 45..."},
+  // ... 5 more timeout failures
+  {"test_name": "test_network_create", "error": "NullPointerException", "stack": "...line 89..."},
+  {"test_name": "test_network_delete", "error": "NullPointerException", "stack": "...line 89..."},
+  // ... 2 more NPE failures
+  {"test_name": "test_storage_mount", "error": "Permission denied", "stack": "...line 123..."}
+]
+```
+
+### Grouping Output
+
+```python
+failure_groups = {
+    "hash_a": [test_vm_start, test_vm_stop, test_vm_restart, ...],  # 8 tests
+    "hash_b": [test_network_create, test_network_delete, ...],       # 3 tests
+    "hash_c": [test_storage_mount],                                  # 1 test
+}
+```
+
+**Result:**
+- 12 failures → 3 unique error signatures
+- 3 AI CLI calls instead of 12 (75% reduction)
+- Log: "Grouped 12 failures into 3 unique error types"
+
+### Analysis Summary
+
+**analyzer.py:1373-1380** — Summary generation:
+
+```python
+total_failures = len(failures)
+# Include deduplication info in summary if applicable
+if unique_errors > 0 and unique_errors < total_failures:
+    summary = (
+        f"{total_failures} failure(s) analyzed "
+        f"({unique_errors} unique error type(s))"
+    )
+else:
+    summary = f"{total_failures} failure(s) analyzed"
+```
+
+**Output:**
+```json
+{
+  "summary": "12 failure(s) analyzed (3 unique error types)",
+  "failures": [
+    // ... all 12 failures with analysis attached
+  ]
+}
+```
+
+## Child Job Deduplication
+
+The same deduplication logic applies to **child job analysis**:
+
+**analyzer.py:1000-1023** (in `analyze_child_job()`):
+
+```python
+# Group failures by signature to avoid analyzing identical errors multiple times
+failure_groups: dict[str, list[TestFailure]] = defaultdict(list)
+for tf in test_failures:
+    sig = get_failure_signature(tf)
+    failure_groups[sig].append(tf)
+
+logger.info(
+    f"Grouped {len(test_failures)} failures into {len(failure_groups)} unique error types"
+)
+
+# Analyze each unique failure group in parallel
+tasks = [
+    analyze_failure_group(
+        failures=group,
+        console_context=console_context,
+        repo_path=repo_path,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        ai_cli_timeout=ai_cli_timeout,
+    )
+    for group in failure_groups.values()
+]
+group_results = await run_parallel_with_limit(tasks)
+```
+
+Deduplication happens **at every level** of the job hierarchy:
+- Main job failures
+- Each child job's failures
+- Recursive child failures
+
+## Jira Keyword Deduplication
+
+Jira searches are **also deduplicated** by keyword set:
+
+**jira.py:368-375** — `enrich_with_jira_matches()`:
+
+```python
+# Deduplicate by keyword set — same keywords = one Jira search
+keyword_to_reports: dict[tuple[str, ...], list[ProductBugReport]] = {}
+for report in reports:
+    if not report.jira_search_keywords:
+        continue
+    key = tuple(sorted(report.jira_search_keywords))
+    keyword_to_reports.setdefault(key, []).append(report)
+```
+
+If 10 PRODUCT BUG failures share the same `jira_search_keywords`, **one Jira search** is performed and results are shared.
+
+## Performance Impact
+
+### Benchmark: 100 Test Failures
+
+| Scenario | Unique Errors | AI Calls | Time Saved |
+|----------|---------------|----------|------------|
+| No deduplication | 100 | 100 | baseline |
+| Typical test suite | 15 | 15 | 85% fewer calls |
+| Widespread outage | 3 | 3 | 97% fewer calls |
+
+<Info>
+Real-world Jenkins jobs often have **high duplication rates** due to:
+- Infrastructure failures affecting many tests
+- API changes breaking multiple endpoints
+- Configuration errors cascading through suites
+</Info>
+
+## Edge Cases
+
+### 1. Similar But Different Errors
+
+**Problem:** Two errors with similar messages but different root causes:
+
+```python
+test_a: "Timeout waiting for VM (network issue)"
+test_b: "Timeout waiting for VM (disk full)"
+```
+
+**Solution:** Stack traces differ, so signatures diverge:
+```python
+sig_a = hash("Timeout... | network_driver.py:45 | ...")
+sig_b = hash("Timeout... | storage_handler.py:89 | ...")
+```
+
+### 2. Flaky Test Variations
+
+**Problem:** Same test fails differently on retry:
+
+```python
+test_retry_1: "AssertionError: expected 5, got 3"
+test_retry_2: "AssertionError: expected 5, got 4"
+```
+
+**Solution:** Different error messages → different signatures → separate analysis
+
+This is **correct behavior** — the root cause may vary.
+
+### 3. Empty Stack Trace
+
+**Problem:** Some test frameworks don't populate stack traces:
+
+```python
+failure.stack_trace = ""
+```
+
+**Solution:** Signature uses error message only:
+```python
+stack_lines = "".split("\n")[:5]  # []
+signature_text = f"{failure.error_message}|"  # No stack info
+```
+
+All failures with same error message **but no stack trace** are grouped together.
+
+<Note>
+This can over-group failures. If you notice too much grouping, ensure your test framework captures stack traces.
+</Note>
+
+## Observability
+
+### Logs
+
+**INFO level** logs show deduplication in action:
+
+```
+INFO: Grouped 45 failures into 8 unique error types
+INFO: Calling CLAUDE CLI for failure group (12 tests with same error)
+INFO: Calling CLAUDE CLI for failure group (8 tests with same error)
+INFO: Calling CLAUDE CLI for failure group (5 tests with same error)
+...
+```
+
+### Summary Field
+
+**AnalysisResult.summary** includes deduplication stats:
+
+```json
+{
+  "summary": "45 failure(s) analyzed (8 unique error types)",
+  "failures": [...]
+}
+```
+
+### HTML Report
+
+The HTML report groups failures by classification, making it easy to see deduplicated analysis:
+
+```html
+<h3>CODE ISSUE: API endpoint misconfiguration (12 tests affected)</h3>
+<ul>
+  <li>test_user_login</li>
+  <li>test_user_logout</li>
+  <!-- ... 10 more -->
+</ul>
+```
+
+## Configuration
+
+### MAX_CONCURRENT_AI_CALLS
+
+**analyzer.py:55**:
+```python
+MAX_CONCURRENT_AI_CALLS = 10
+```
+
+Controls how many unique failure groups are analyzed **concurrently**.
+
+- Higher = faster for many unique errors, more resource usage
+- Lower = slower, more conservative
+
+### Signature Algorithm
+
+Currently **not configurable**. Future enhancement could expose:
+
+- Number of stack trace lines (currently 5)
+- Hash algorithm (currently SHA-256)
+- Additional factors (error type, test class)
+
+## Related Components
+
+<CardGroup cols={2}>
+  <Card title="Parallel Execution" icon="diagram-project" href="/architecture/overview#parallel-execution">
+    How groups are analyzed concurrently
+  </Card>
+  <Card title="AI CLI Integration" icon="terminal" href="/architecture/cli-based-ai">
+    How AI analyses each group
+  </Card>
+</CardGroup>

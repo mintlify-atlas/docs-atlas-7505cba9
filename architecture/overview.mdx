@@ -1,0 +1,260 @@
+---
+title: System Architecture Overview
+description: High-level architecture and data flow through Jenkins Job Insight
+---
+
+## Architecture Overview
+
+Jenkins Job Insight is a FastAPI-based service that analyzes Jenkins job failures using AI CLI tools. The system follows a webhook-to-callback flow, with comprehensive failure analysis and optional Jira integration.
+
+## Core Components
+
+| Component | Location | Purpose |
+|-----------|----------|----------|
+| `main.py` | FastAPI application | HTTP endpoints, request handling, background tasks |
+| `analyzer.py` | Analysis engine | AI CLI calls, failure grouping, parallel execution |
+| `jenkins.py` | Jenkins client | Jenkins API wrapper, build info retrieval |
+| `jira.py` | Jira integration | Optional bug deduplication via Jira search |
+| `storage.py` | SQLite storage | Result persistence, HTML report caching |
+
+## Data Flow: Webhook to Callback
+
+```
+┌─────────────────┐
+│  POST /analyze  │
+└────────┬────────┘
+         │
+         ├─ Sync mode (?sync=true)
+         │  └─> Execute immediately, return full result
+         │
+         └─ Async mode (default)
+            │
+            ├─ Generate job_id
+            ├─ Save initial state (pending)
+            ├─ Queue background task
+            └─ Return {job_id, status, result_url}
+
+┌──────────────────────────────┐
+│  Background Task Processing  │
+└──────────────┬───────────────┘
+               │
+               ├─ 1. Update status: running
+               ├─ 2. Fetch Jenkins data
+               ├─ 3. Clone test repository (optional)
+               ├─ 4. Sanity check AI CLI
+               ├─ 5. Analyze failures (parallel)
+               ├─ 6. Enrich with Jira (optional)
+               ├─ 7. Save result (completed)
+               └─ 8. Deliver to callback webhook
+
+┌──────────────────┐
+│  Callback POST   │  ← Full AnalysisResult JSON
+└──────────────────┘
+```
+
+### Async Flow Details
+
+**main.py:366-451** implements the `/analyze` endpoint:
+
+1. **Request arrives** — `analyze()` endpoint handler receives `AnalyzeRequest`
+2. **Job ID generation** — UUID created before background task queue (main.py:427)
+3. **Initial save** — Record saved with `status="pending"` (main.py:433)
+4. **Background task** — `process_analysis_with_id()` queued (main.py:434)
+5. **Immediate response** — Returns job_id, result_url, html_report_url
+
+**main.py:314-364** implements background processing:
+
+1. **Status update** — `status="running"` (main.py:330)
+2. **Analysis** — `analyze_job()` called (main.py:334-336)
+3. **Jira enrichment** — Optional post-processing (main.py:339-345)
+4. **Result storage** — Full result saved with `status="completed"` (main.py:353)
+5. **Callback delivery** — `deliver_results()` sends HTTP POST (main.py:359)
+
+## Analysis Pipeline
+
+### Main Job Analysis (analyzer.py:1104-1401)
+
+```
+analyze_job()
+  |
+  ├─ Get build info from Jenkins
+  ├─ Early exit if build passed (SUCCESS)
+  ├─ Fetch console output
+  ├─ Extract failed child jobs
+  |
+  ├─ Clone test repository (optional)
+  ├─ Sanity check AI CLI availability
+  |
+  ├─ Analyze child jobs (parallel, recursive)
+  │  └─> analyze_child_job() for each
+  |
+  ├─ Get test report (structured failures)
+  |
+  ├─ If pipeline orchestrator (children + no tests):
+  │  └─> Return child analyses only
+  |
+  └─ Analyze main job failures:
+     ├─ Group by failure signature
+     ├─ Analyze each group (parallel)
+     └─> analyze_failure_group() for each
+```
+
+### Failure Grouping & Deduplication
+
+**analyzer.py:136-152** — `get_failure_signature()`:
+- Creates MD5 hash from error message + first 5 stack trace lines
+- Groups identical failures together
+- Reduces redundant AI CLI calls
+
+**analyzer.py:1286-1293** — Grouping in action:
+```python
+failure_groups: dict[str, list[TestFailure]] = defaultdict(list)
+for tf in test_failures:
+    sig = get_failure_signature(tf)
+    failure_groups[sig].append(tf)
+```
+
+Each unique signature gets **one AI analysis** applied to all matching failures.
+
+## Parallel Execution
+
+**analyzer.py:154-177** — `run_parallel_with_limit()`:
+- Semaphore-based concurrency control (default: 10 concurrent)
+- Uses `asyncio.gather(..., return_exceptions=True)`
+- One failure doesn't crash entire batch
+
+### Where Parallelism Happens
+
+1. **Child job analysis** (main.py:1215-1230) — All failed child jobs analyzed in parallel
+2. **Failure group analysis** (main.py:1296-1307) — Each unique error analyzed in parallel
+3. **Jira searches** (jira.py:398-399) — Multiple keyword sets searched in parallel
+
+<Note>
+Parallelism is bounded to prevent overwhelming the AI CLI or external services. All parallel operations handle exceptions gracefully.
+</Note>
+
+## Jira Integration Flow
+
+**main.py:339-345** — Post-analysis enrichment:
+```python
+if _resolve_enable_jira(body, settings):
+    await _enrich_result_with_jira(
+        result.failures + list(result.child_job_analyses),
+        settings,
+        ai_provider,
+        ai_model,
+    )
+```
+
+**jira.py:340-450** — `enrich_with_jira_matches()`:
+1. Collect all PRODUCT BUG failures
+2. Deduplicate by keyword set (same keywords = one search)
+3. Search Jira for each unique keyword set (parallel)
+4. AI filters candidates for relevance
+5. Attach matches to all reports sharing keywords
+
+<Info>
+Jira integration is **completely optional** and **non-blocking**. All exceptions are caught and logged; failures never interrupt the analysis pipeline.
+</Info>
+
+## Storage & Result Retrieval
+
+### SQLite Database (storage.py)
+
+**Schema** (storage.py:24-33):
+```sql
+CREATE TABLE results (
+    job_id TEXT PRIMARY KEY,
+    jenkins_url TEXT,
+    status TEXT,
+    result_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Status lifecycle**:
+1. `pending` — Job queued, not started
+2. `running` — Analysis in progress
+3. `completed` — Analysis successful, result available
+4. `failed` — Analysis failed, error in result
+
+### HTML Report Caching
+
+**main.py:633-684** — `/results/{job_id}.html` endpoint:
+1. Check disk cache first (unless `?refresh=1`)
+2. If pending/running: Return status page with auto-refresh
+3. If completed: Generate HTML from stored result, cache to disk
+4. Future requests served from cache
+
+**storage.py:243-272** — Report storage:
+- Reports saved to `/data/reports/{job_id}.html`
+- Lazy generation: only created when first accessed
+- Cache invalidation via `?refresh=1` query parameter
+
+## Configuration & Settings
+
+**main.py:216-276** — `_merge_settings()`:
+
+Every environment variable can be overridden per-request:
+
+| Environment Variable | Request Field | Purpose |
+|---------------------|---------------|----------|
+| `JENKINS_URL` | `jenkins_url` | Jenkins server URL |
+| `AI_PROVIDER` | `ai_provider` | AI CLI provider (claude/gemini/cursor) |
+| `AI_MODEL` | `ai_model` | Model identifier |
+| `JIRA_URL` | `jira_url` | Jira server URL |
+| `ENABLE_JIRA` | `enable_jira` | Enable Jira integration |
+| `AI_CLI_TIMEOUT` | `ai_cli_timeout` | Timeout in minutes |
+
+<Info>
+Request body values **always override** environment variables. This allows per-request customization without restarting the service.
+</Info>
+
+## Error Handling
+
+### Jenkins API Errors
+
+**analyzer.py:600-650** — `handle_jenkins_exception()`:
+- 404 → `HTTPException(status_code=404)` "Job not found"
+- 401 → `HTTPException(status_code=502)` "Authentication failed"
+- 403 → `HTTPException(status_code=502)` "Access denied"
+
+### AI CLI Failures
+
+**analyzer.py:481-545** — `call_ai_cli()`:
+- Timeout → Returns `(False, "Analysis timed out after N minutes")`
+- Non-zero exit → Returns `(False, stderr_or_stdout)`
+- Success → Returns `(True, stdout)`
+
+Parsing failures are handled gracefully:
+- **analyzer.py:179-223** — Multi-strategy JSON parsing
+- **analyzer.py:225-326** — Regex-based recovery from malformed JSON
+
+### Graceful Degradation
+
+1. **No test report** → Falls back to console output analysis
+2. **Repository clone fails** → Analysis continues without code context
+3. **Jira search fails** → Logged, no matches attached, analysis completes
+4. **One failure group fails** → Other groups still analyzed and returned
+
+## Logging Strategy
+
+**CLAUDE.md:76-80** — Logging principles:
+
+- **INFO**: Milestones (job started, AI calls, completed)
+- **DEBUG**: Detailed operations (response lengths, extracted data)
+- **WARNING**: Recoverable errors (repo clone failed, JSON parsing fallback)
+- **ERROR/EXCEPTION**: Failures requiring attention
+
+Configured via `LOG_LEVEL` environment variable.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Failure Deduplication" icon="layer-group" href="/architecture/failure-deduplication">
+    Deep dive into signature-based grouping
+  </Card>
+  <Card title="CLI-Based AI" icon="terminal" href="/architecture/cli-based-ai">
+    Why subprocess over SDKs
+  </Card>
+</CardGroup>

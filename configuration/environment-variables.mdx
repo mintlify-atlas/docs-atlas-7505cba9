@@ -1,0 +1,381 @@
+---
+title: Environment Variables
+description: Complete reference for all Jenkins Job Insight environment variables
+---
+
+Configure Jenkins Job Insight using environment variables. All configuration options can also be overridden per-request in API payloads.
+
+## Jenkins Configuration
+
+Jenkins connection settings. The service is tied to a single Jenkins instance via `JENKINS_URL`.
+
+<ParamField path="JENKINS_URL" type="string" required>
+  Jenkins server URL. The service connects to this Jenkins instance for all analysis requests.
+  
+  ```bash
+  JENKINS_URL=https://jenkins.example.com
+  ```
+</ParamField>
+
+<ParamField path="JENKINS_USER" type="string" required>
+  Jenkins username for authentication.
+  
+  ```bash
+  JENKINS_USER=your-username
+  ```
+</ParamField>
+
+<ParamField path="JENKINS_PASSWORD" type="string" required>
+  Jenkins password or API token. Using an API token is recommended for security.
+  
+  ```bash
+  JENKINS_PASSWORD=your-api-token
+  ```
+</ParamField>
+
+<ParamField path="JENKINS_SSL_VERIFY" type="boolean" default="true">
+  Enable SSL certificate verification. Set to `false` for self-signed certificates.
+  
+  ```bash
+  JENKINS_SSL_VERIFY=false
+  ```
+  
+  <Warning>
+    In production, use properly signed certificates and keep this set to `true`.
+  </Warning>
+</ParamField>
+
+## AI Provider Configuration
+
+<ParamField path="AI_PROVIDER" type="string" required>
+  AI provider to use for analysis. Must be one of: `claude`, `gemini`, or `cursor`.
+  
+  ```bash
+  AI_PROVIDER=claude
+  ```
+</ParamField>
+
+<ParamField path="AI_MODEL" type="string" required>
+  AI model identifier for the selected provider.
+  
+  ```bash
+  AI_MODEL=claude-opus-4-6[1m]
+  ```
+  
+  <Note>
+    Model names vary by provider. Refer to your AI provider's documentation for available models.
+  </Note>
+</ParamField>
+
+<ParamField path="AI_CLI_TIMEOUT" type="integer" default="10">
+  Timeout for AI CLI calls in minutes. Increase for slower models.
+  
+  ```bash
+  AI_CLI_TIMEOUT=15
+  ```
+  
+  <Note>
+    Must be greater than 0. Invalid values default to 10 minutes.
+  </Note>
+</ParamField>
+
+### Claude CLI Configuration
+
+Claude CLI supports two authentication methods:
+
+<ParamField path="ANTHROPIC_API_KEY" type="string">
+  Direct API key authentication (simplest method).
+  
+  ```bash
+  ANTHROPIC_API_KEY=your-anthropic-api-key
+  ```
+</ParamField>
+
+**Vertex AI Authentication:**
+
+<ParamField path="CLAUDE_CODE_USE_VERTEX" type="boolean">
+  Enable Vertex AI authentication for Claude.
+  
+  ```bash
+  CLAUDE_CODE_USE_VERTEX=1
+  ```
+</ParamField>
+
+<ParamField path="CLOUD_ML_REGION" type="string">
+  Vertex AI region.
+  
+  ```bash
+  CLOUD_ML_REGION=us-east5
+  ```
+</ParamField>
+
+<ParamField path="ANTHROPIC_VERTEX_PROJECT_ID" type="string">
+  Google Cloud project ID for Vertex AI.
+  
+  ```bash
+  ANTHROPIC_VERTEX_PROJECT_ID=your-project-id
+  ```
+</ParamField>
+
+### Gemini CLI Configuration
+
+<ParamField path="GEMINI_API_KEY" type="string">
+  API key for Gemini CLI authentication.
+  
+  ```bash
+  GEMINI_API_KEY=your-gemini-api-key
+  ```
+  
+  <Note>
+    Alternatively, use OAuth by running `gemini auth login`. No environment variable needed for OAuth.
+  </Note>
+</ParamField>
+
+### Cursor Agent CLI Configuration
+
+<ParamField path="CURSOR_API_KEY" type="string">
+  API key for Cursor Agent CLI authentication.
+  
+  ```bash
+  CURSOR_API_KEY=your-cursor-api-key
+  ```
+  
+  <Note>
+    For web-based authentication in Docker, run: `docker exec <container-name> agent login`
+  </Note>
+</ParamField>
+
+## Application Configuration
+
+<ParamField path="LOG_LEVEL" type="string" default="INFO">
+  Log verbosity level. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+  
+  ```bash
+  LOG_LEVEL=DEBUG
+  ```
+  
+  - `DEBUG` - Detailed operation logs
+  - `INFO` - Milestones and important events
+  - `WARNING` - Warnings only
+  - `ERROR` - Errors only
+</ParamField>
+
+<ParamField path="DEBUG" type="boolean" default="false">
+  Enable debug mode with hot reload for development.
+  
+  ```bash
+  DEBUG=true
+  ```
+  
+  <Warning>
+    Only use in development environments. Not recommended for production.
+  </Warning>
+</ParamField>
+
+<ParamField path="HTML_REPORT" type="boolean" default="true">
+  Generate HTML reports for analysis results.
+  
+  ```bash
+  HTML_REPORT=false
+  ```
+  
+  <Note>
+    When enabled, self-contained dark-themed HTML reports are generated alongside JSON results.
+  </Note>
+</ParamField>
+
+## Optional Defaults
+
+These settings provide default values that can be overridden per-request in API payloads.
+
+<ParamField path="TESTS_REPO_URL" type="string">
+  Default tests repository URL for cloning context.
+  
+  ```bash
+  TESTS_REPO_URL=https://github.com/org/test-repo
+  ```
+  
+  <Note>
+    Can be overridden via `tests_repo_url` in the request payload.
+  </Note>
+</ParamField>
+
+<ParamField path="CALLBACK_URL" type="string">
+  Default callback webhook URL for async analysis results.
+  
+  ```bash
+  CALLBACK_URL=https://your-service.com/webhook/results
+  ```
+  
+  <Note>
+    Can be overridden via `callback_url` in the request payload.
+  </Note>
+</ParamField>
+
+<ParamField path="CALLBACK_HEADERS" type="string">
+  Default callback headers as JSON string.
+  
+  ```bash
+  CALLBACK_HEADERS={"Authorization": "Bearer xxx"}
+  ```
+  
+  <Note>
+    Can be overridden via `callback_headers` in the request payload.
+  </Note>
+</ParamField>
+
+## Custom Prompt Configuration
+
+<ParamField path="PROMPT_FILE" type="string" default="/app/PROMPT.md">
+  Path to custom analysis prompt file for AI behavior customization.
+  
+  ```bash
+  PROMPT_FILE=/app/PROMPT.md
+  ```
+  
+  Mount your custom prompt file to this path to customize AI analysis behavior. See [Custom Prompts](/configuration/custom-prompts) for details.
+</ParamField>
+
+## Jira Integration (Optional)
+
+Jira integration is completely optional. When configured, the service searches Jira for existing bugs matching PRODUCT BUG failures.
+
+<ParamField path="JIRA_URL" type="string">
+  Jira instance URL (Cloud or Server/DC). Setting this enables Jira integration.
+  
+  ```bash
+  # Jira Cloud
+  JIRA_URL=https://your-org.atlassian.net
+  
+  # Jira Server/DC
+  JIRA_URL=https://jira.your-company.com
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_JIRA" type="boolean">
+  Explicitly enable or disable Jira integration (overrides auto-detection).
+  
+  ```bash
+  ENABLE_JIRA=true
+  ```
+  
+  <Note>
+    When omitted, Jira is automatically enabled if `JIRA_URL` and credentials are configured.
+  </Note>
+</ParamField>
+
+### Jira Cloud Authentication
+
+<ParamField path="JIRA_EMAIL" type="string">
+  Email address for Jira Cloud authentication.
+  
+  ```bash
+  JIRA_EMAIL=your-email@example.com
+  ```
+  
+  <Note>
+    Required for Jira Cloud. Use with `JIRA_API_TOKEN`.
+  </Note>
+</ParamField>
+
+<ParamField path="JIRA_API_TOKEN" type="string">
+  API token for Jira Cloud authentication.
+  
+  ```bash
+  JIRA_API_TOKEN=your-jira-api-token
+  ```
+  
+  <Note>
+    Generate API tokens from your Jira Cloud account settings.
+  </Note>
+</ParamField>
+
+### Jira Server/DC Authentication
+
+<ParamField path="JIRA_PAT" type="string">
+  Personal Access Token for Jira Server/DC authentication.
+  
+  ```bash
+  JIRA_PAT=your-personal-access-token
+  ```
+</ParamField>
+
+### Jira Search Configuration
+
+<ParamField path="JIRA_PROJECT_KEY" type="string">
+  Scope Jira searches to a specific project.
+  
+  ```bash
+  JIRA_PROJECT_KEY=PROJ
+  ```
+  
+  <Note>
+    When omitted, searches across all projects accessible to the authenticated user.
+  </Note>
+</ParamField>
+
+<ParamField path="JIRA_SSL_VERIFY" type="boolean" default="true">
+  SSL certificate verification for Jira connections.
+  
+  ```bash
+  JIRA_SSL_VERIFY=false
+  ```
+  
+  <Warning>
+    Only disable for self-signed certificates in development/testing environments.
+  </Warning>
+</ParamField>
+
+<ParamField path="JIRA_MAX_RESULTS" type="integer" default="5">
+  Maximum number of Jira results per search.
+  
+  ```bash
+  JIRA_MAX_RESULTS=10
+  ```
+  
+  <Note>
+    Must be greater than 0. AI filters results for relevance after retrieval.
+  </Note>
+</ParamField>
+
+## Per-Request Overrides
+
+Most environment variables can be overridden in API request payloads. This allows different configurations per analysis without changing the server environment.
+
+<Note>
+  See the [Request Models](/api/models/requests) for the complete list of request fields that override environment variables.
+</Note>
+
+**Exceptions** (server-level only):
+- `DEBUG` - Server reload toggle
+- `LOG_LEVEL` - Server log verbosity  
+- `PROMPT_FILE` - Server-local file path
+
+## Example .env File
+
+```bash
+# Jenkins Configuration (Required)
+JENKINS_URL=https://jenkins.example.com
+JENKINS_USER=your-username
+JENKINS_PASSWORD=your-api-token
+JENKINS_SSL_VERIFY=true
+
+# AI Provider (Required)
+AI_PROVIDER=claude
+AI_MODEL=claude-opus-4-6[1m]
+
+# Claude Authentication
+ANTHROPIC_API_KEY=your-anthropic-api-key
+
+# Logging
+LOG_LEVEL=INFO
+
+# Optional Defaults
+TESTS_REPO_URL=https://github.com/org/test-repo
+
+# Jira Integration (Optional)
+JIRA_URL=https://your-org.atlassian.net
+JIRA_EMAIL=your-email@example.com
+JIRA_API_TOKEN=your-jira-api-token
+JIRA_PROJECT_KEY=PROJ
+```

@@ -1,0 +1,405 @@
+---
+title: Custom Prompts
+description: Customize AI analysis behavior with custom prompt files
+---
+
+Customize how the AI analyzes test failures by mounting a custom prompt file. This allows you to tailor the analysis to your specific testing patterns, terminology, and reporting requirements.
+
+## How It Works
+
+The service looks for a prompt file at the path specified by `PROMPT_FILE` (default: `/app/PROMPT.md`):
+
+- **File exists** → Uses your custom prompt
+- **File missing** → Uses built-in default prompt
+
+<Note>
+  The custom prompt completely replaces the default analysis instructions. Make sure your prompt includes all necessary guidance for the AI.
+</Note>
+
+## Configuration
+
+<ParamField path="PROMPT_FILE" type="string" default="/app/PROMPT.md">
+  Path where the service looks for the custom prompt file.
+  
+  ```bash
+  PROMPT_FILE=/app/PROMPT.md
+  ```
+</ParamField>
+
+## Docker Setup
+
+Mount your custom prompt file to the container:
+
+### Docker Run
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v ./data:/data \
+  -v ./my-prompt.md:/app/PROMPT.md:ro \
+  -e JENKINS_URL=https://jenkins.example.com \
+  -e JENKINS_USER=your-username \
+  -e JENKINS_PASSWORD=your-api-token \
+  -e AI_PROVIDER=claude \
+  -e AI_MODEL=claude-opus-4-6[1m] \
+  jenkins-job-insight
+```
+
+<Note>
+  The `:ro` flag mounts the file as read-only for security.
+</Note>
+
+### Docker Compose
+
+```yaml
+services:
+  jenkins-job-insight:
+    image: jenkins-job-insight
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+      - ./PROMPT.md:/app/PROMPT.md:ro  # Mount custom prompt (read-only)
+    env_file:
+      - .env
+```
+
+## Default Prompt Structure
+
+The built-in prompt instructs the AI to:
+
+1. **Analyze test failures** from Jenkins console output and test reports
+2. **Classify failures** as either CODE ISSUE or PRODUCT BUG
+3. **Return structured JSON** with specific fields
+
+### JSON Response Schema
+
+The AI must return JSON matching one of these schemas:
+
+<Tabs>
+  <Tab title="CODE ISSUE">
+    ```json
+    {
+      "classification": "CODE ISSUE",
+      "affected_tests": ["test_name_1", "test_name_2"],
+      "details": "Detailed analysis of what caused this failure",
+      "code_fix": {
+        "file": "exact/file/path.py",
+        "line": "line number",
+        "change": "specific code change that fixes all affected tests"
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="PRODUCT BUG">
+    ```json
+    {
+      "classification": "PRODUCT BUG",
+      "affected_tests": ["test_name_1", "test_name_2"],
+      "details": "Detailed analysis of what caused this failure",
+      "product_bug_report": {
+        "title": "concise bug title",
+        "severity": "critical/high/medium/low",
+        "component": "affected component",
+        "description": "what product behavior is broken",
+        "evidence": "relevant log snippets",
+        "jira_search_keywords": [
+          "specific error symptom",
+          "component + behavior",
+          "error type"
+        ]
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Your custom prompt MUST instruct the AI to return JSON matching this exact schema. The parser expects these fields.
+</Warning>
+
+## Jira Search Keywords
+
+If you enable Jira integration, instruct the AI to generate high-quality search keywords:
+
+```markdown
+jira_search_keywords rules:
+- Generate 3-5 SHORT specific keywords for finding matching bugs in Jira
+- Focus on the specific error symptom and broken behavior, NOT test infrastructure
+- Combine component name with the specific failure (e.g. "VM start failure migration")
+- AVOID generic/broad terms alone like "timeout", "failure", "error"
+- Each keyword should narrow Jira search results to relevant bugs
+- Think: "what would someone title a Jira bug for this exact issue?"
+```
+
+## Custom Prompt Template
+
+Here's a template for creating your custom prompt:
+
+```markdown
+# Test Failure Analysis Instructions
+
+You are analyzing test failures from a Jenkins CI job. Your task is to:
+
+1. **Classify the failure** as either:
+   - **CODE ISSUE**: Problem in test code (wrong assertion, flaky test, setup issue)
+   - **PRODUCT BUG**: Actual bug in the product being tested
+
+2. **Analyze the root cause** using:
+   - Test error messages and stack traces
+   - Jenkins console output
+   - Source code from the cloned repository (if available)
+
+3. **Provide actionable guidance**:
+   - For CODE ISSUE: Suggest specific code fix
+   - For PRODUCT BUG: Create structured bug report with Jira search keywords
+
+## Response Format
+
+CRITICAL: Your response must be ONLY a valid JSON object. No text before or after. No markdown code blocks.
+
+If CODE ISSUE:
+```json
+{
+  "classification": "CODE ISSUE",
+  "affected_tests": ["test_name_1"],
+  "details": "Your analysis",
+  "code_fix": {
+    "file": "path/to/file.py",
+    "line": "42",
+    "change": "Replace assertion with correct expected value"
+  }
+}
+```
+
+If PRODUCT BUG:
+```json
+{
+  "classification": "PRODUCT BUG",
+  "affected_tests": ["test_name_1"],
+  "details": "Your analysis",
+  "product_bug_report": {
+    "title": "Bug title",
+    "severity": "high",
+    "component": "component-name",
+    "description": "What's broken",
+    "evidence": "Log snippets",
+    "jira_search_keywords": ["keyword1", "keyword2"]
+  }
+}
+```
+
+## Domain-Specific Context
+
+[Add your company/project-specific context here]
+
+- Common components and their names
+- Known flaky test patterns
+- Severity level guidelines
+- Terminology and conventions
+
+## Examples
+
+[Add example analyses for your domain]
+```
+
+## Customization Examples
+
+### Add Domain-Specific Classification
+
+```markdown
+## Classification Rules
+
+**CODE ISSUE** if:
+- Test uses hard-coded timeouts
+- Assertion compares floating-point numbers without tolerance
+- Test setup/teardown failures
+- Race conditions in test execution
+
+**PRODUCT BUG** if:
+- API returns unexpected status code
+- Database state incorrect after operation
+- UI element not rendered as expected
+- Performance regression beyond thresholds
+```
+
+### Customize Severity Levels
+
+```markdown
+## Severity Guidelines
+
+- **critical**: Data loss, security vulnerability, system crash
+- **high**: Core functionality broken, blocking user workflows
+- **medium**: Feature partially working, workaround available
+- **low**: Cosmetic issue, minor inconvenience
+```
+
+### Add Component Mapping
+
+```markdown
+## Component Detection
+
+Map test paths to components:
+- `tests/api/auth/*` → "authentication-service"
+- `tests/api/billing/*` → "billing-service"
+- `tests/ui/dashboard/*` → "dashboard-ui"
+- `tests/integration/db/*` → "database-layer"
+```
+
+### Customize Jira Keywords
+
+```markdown
+## Jira Search Keywords
+
+For our project, generate keywords like:
+- **API failures**: "[endpoint] [status_code] [operation]"
+  Example: "POST /users 500 creation"
+
+- **UI failures**: "[component] [interaction] [state]"
+  Example: "login button disabled enabled_users"
+
+- **Database failures**: "[table] [operation] [constraint]"
+  Example: "users insert duplicate_key"
+```
+
+## Advanced: Multi-Language Support
+
+```markdown
+## Language-Specific Analysis
+
+When analyzing failures:
+
+**Python tests**:
+- Check for common pytest issues (fixture scope, parametrization)
+- Look for assertion introspection limitations
+
+**JavaScript tests**:
+- Check for promise/async issues
+- Look for timing problems in browser automation
+
+**Java tests**:
+- Check for JUnit version-specific issues
+- Look for dependency injection problems
+```
+
+## Validation
+
+After creating your custom prompt:
+
+1. **Test with a sample failure**:
+   ```bash
+   curl -X POST "http://localhost:8000/analyze?sync=true" \
+     -H "Content-Type: application/json" \
+     -d '{"job_name": "test", "build_number": 1, ...}'
+   ```
+
+2. **Verify JSON schema**:
+   - Check that `classification` is present
+   - Verify either `code_fix` or `product_bug_report` exists
+   - Confirm `affected_tests` is populated
+
+3. **Check Jira keywords** (if enabled):
+   - Keywords should be specific, not generic
+   - Should combine component + symptom
+   - Should match your bug reporting conventions
+
+<Warning>
+  If the AI returns invalid JSON or missing fields, the parser falls back to storing raw text in the `details` field and attempts recovery via regex extraction.
+</Warning>
+
+## Fallback Behavior
+
+If JSON parsing fails, the service:
+
+1. Stores raw AI response in `details` field
+2. Attempts to extract structured fields via regex
+3. Logs a warning about unparseable response
+4. Returns partial analysis with available data
+
+```python
+# Fallback result when JSON parsing fails
+{
+  "classification": "",
+  "details": "<raw AI response text>",
+  "affected_tests": [],
+  "code_fix": False,
+  "product_bug_report": False
+}
+```
+
+## Debugging
+
+Enable debug logging to see prompt and response:
+
+```bash
+LOG_LEVEL=DEBUG
+```
+
+Logs will show:
+- Full prompt sent to AI CLI
+- Raw AI response text
+- JSON parsing attempts and failures
+- Regex extraction results
+
+```
+INFO: Calling CLAUDE CLI for failure group (2 tests with same error)
+DEBUG: CLAUDE CLI response length: 1234 chars
+WARNING: Recovered classification 'PRODUCT BUG' from unparseable AI response via regex extraction
+```
+
+## Best Practices
+
+<Note>
+  Follow these guidelines for effective custom prompts:
+</Note>
+
+1. **Be explicit about JSON format** - Include example JSON in the prompt
+2. **Define classification criteria** - Clear rules for CODE ISSUE vs PRODUCT BUG
+3. **Request specific evidence** - Ask for log snippets, line numbers, file paths
+4. **Encourage repository exploration** - Remind AI it has access to source code
+5. **Test with real failures** - Validate prompt with actual failure scenarios
+6. **Iterate based on results** - Refine prompt when AI misclassifies or provides vague analysis
+
+## Troubleshooting
+
+### AI Returns Invalid JSON
+
+✅ **Solution:** Add explicit instructions and examples:
+
+```markdown
+CRITICAL: Your response must be ONLY valid JSON. 
+No markdown code blocks. No explanatory text.
+Start with { and end with }.
+
+Example:
+{"classification": "CODE ISSUE", ...}
+```
+
+### Missing Classification
+
+✅ **Solution:** Emphasize required fields:
+
+```markdown
+Required fields in every response:
+- classification (must be "CODE ISSUE" or "PRODUCT BUG")
+- affected_tests (array of test names)
+- details (your analysis text)
+- EITHER code_fix OR product_bug_report (never both)
+```
+
+### Poor Jira Keywords
+
+✅ **Solution:** Provide specific examples:
+
+```markdown
+Good keywords:
+✓ "authentication 401 valid_credentials"
+✓ "database connection_pool timeout"
+✓ "API rate_limit exceeded"
+
+Bad keywords:
+✗ "error" (too generic)
+✗ "test failure" (not about product)
+✗ "timeout" (needs context)
+```

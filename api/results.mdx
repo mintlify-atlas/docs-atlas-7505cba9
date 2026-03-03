@@ -1,0 +1,288 @@
+---
+title: 'GET /results'
+description: 'Retrieve and list analysis results'
+---
+
+Retrieve analysis results by job ID or list recent analysis jobs.
+
+## Get Result by Job ID
+
+Retrieve a specific analysis result.
+
+### Endpoint
+
+```
+GET /results/{job_id}
+```
+
+### Path Parameters
+
+<ParamField path="job_id" type="string" required>
+  Unique job identifier returned by POST /analyze or POST /analyze-failures.
+</ParamField>
+
+### Response (200 OK)
+
+<ResponseField name="job_id" type="string">
+  Unique identifier for the analysis job.
+</ResponseField>
+
+<ResponseField name="jenkins_url" type="string">
+  URL of the Jenkins build (empty for direct failure analysis).
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current status: `"pending"`, `"running"`, `"completed"`, or `"failed"`.
+</ResponseField>
+
+<ResponseField name="created_at" type="string (ISO 8601)">
+  Timestamp when the job was created.
+</ResponseField>
+
+<ResponseField name="updated_at" type="string (ISO 8601)">
+  Timestamp when the job was last updated.
+</ResponseField>
+
+<ResponseField name="result" type="object">
+  Analysis result data. Present only when `status` is `"completed"`. Structure matches the sync response from POST /analyze or POST /analyze-failures.
+  
+  See:
+  - [POST /analyze](/api/analyze) - Sync mode response structure
+  - [POST /analyze-failures](/api/analyze-failures) - Direct analysis response structure
+</ResponseField>
+
+<ResponseField name="base_url" type="string">
+  Base URL of the service.
+</ResponseField>
+
+<ResponseField name="result_url" type="string">
+  Full URL to this result.
+</ResponseField>
+
+### Example
+
+```bash
+curl https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000
+```
+
+**Response (Pending):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+  "status": "pending",
+  "created_at": "2026-03-03T10:30:00Z",
+  "updated_at": "2026-03-03T10:30:00Z",
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response (Completed):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+  "status": "completed",
+  "created_at": "2026-03-03T10:30:00Z",
+  "updated_at": "2026-03-03T10:32:15Z",
+  "result": {
+    "job_id": "550e8400-e29b-41d4-a716-446655440000",
+    "job_name": "my-pipeline",
+    "build_number": 123,
+    "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+    "status": "completed",
+    "summary": "Analyzed 5 test failures (3 unique errors). 2 CODE ISSUES, 1 PRODUCT BUG.",
+    "ai_provider": "claude",
+    "ai_model": "claude-opus-4-20250514",
+    "failures": [...],
+    "child_job_analyses": [],
+    "html_report_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000.html"
+  },
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response (Failed):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+  "status": "failed",
+  "created_at": "2026-03-03T10:30:00Z",
+  "updated_at": "2026-03-03T10:31:45Z",
+  "result": {
+    "error": "Failed to connect to Jenkins: Connection refused"
+  },
+  "base_url": "https://your-instance.com",
+  "result_url": "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Error Response
+
+**Status Code:** `404 Not Found`
+
+```json
+{
+  "detail": "Job not found"
+}
+```
+
+## Get HTML Report
+
+Retrieve an HTML-formatted analysis report.
+
+### Endpoint
+
+```
+GET /results/{job_id}.html
+```
+
+### Path Parameters
+
+<ParamField path="job_id" type="string" required>
+  Unique job identifier.
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="refresh" type="boolean" default="false">
+  Force regeneration of the HTML report (bypasses cache).
+</ParamField>
+
+### Response (200 OK)
+
+Returns HTML content with `Content-Type: text/html`.
+
+The HTML report includes:
+- Job metadata (name, build number, Jenkins URL)
+- AI provider and model information
+- Summary statistics
+- Detailed failure analysis with syntax highlighting
+- Classification badges (CODE ISSUE / PRODUCT BUG)
+- Code fix suggestions
+- Product bug reports with Jira matches
+- Child job analyses (for pipeline builds)
+
+### Behavior
+
+- **Pending/Running:** Returns a status page with auto-refresh (10 seconds)
+- **Completed:** Generates and caches the HTML report on first request
+- **Failed:** Returns 404 with error message
+
+### Example
+
+```bash
+curl https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000.html
+```
+
+**Force Regeneration:**
+
+```bash
+curl "https://your-instance.com/results/550e8400-e29b-41d4-a716-446655440000.html?refresh=true"
+```
+
+### Error Responses
+
+**Status Code:** `404 Not Found`
+
+```json
+{
+  "detail": "Job '550e8400-e29b-41d4-a716-446655440000' not found."
+}
+```
+
+```json
+{
+  "detail": "No report available for job '550e8400-e29b-41d4-a716-446655440000'."
+}
+```
+
+## List Recent Results
+
+Retrieve a list of recent analysis jobs.
+
+### Endpoint
+
+```
+GET /results
+```
+
+### Query Parameters
+
+<ParamField query="limit" type="integer" default="50">
+  Maximum number of results to return (max: 100).
+</ParamField>
+
+### Response (200 OK)
+
+Returns an array of job status objects, sorted by most recent first.
+
+<ResponseField name="[]" type="array">
+  <Expandable title="Job object">
+    <ResponseField name="job_id" type="string">
+      Unique job identifier.
+    </ResponseField>
+    
+    <ResponseField name="jenkins_url" type="string">
+      Jenkins build URL (empty for direct failure analysis).
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Job status: `"pending"`, `"running"`, `"completed"`, or `"failed"`.
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string (ISO 8601)">
+      Creation timestamp.
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="string (ISO 8601)">
+      Last update timestamp.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash
+curl https://your-instance.com/results?limit=10
+```
+
+**Response:**
+
+```json
+[
+  {
+    "job_id": "550e8400-e29b-41d4-a716-446655440000",
+    "jenkins_url": "https://jenkins.example.com/job/my-pipeline/123/",
+    "status": "completed",
+    "created_at": "2026-03-03T10:30:00Z",
+    "updated_at": "2026-03-03T10:32:15Z"
+  },
+  {
+    "job_id": "661f9511-f3ac-52e5-b827-557766551111",
+    "jenkins_url": "https://jenkins.example.com/job/another-job/456/",
+    "status": "running",
+    "created_at": "2026-03-03T10:28:00Z",
+    "updated_at": "2026-03-03T10:29:00Z"
+  },
+  {
+    "job_id": "772fa622-a4bd-63f6-c938-668877662222",
+    "jenkins_url": "",
+    "status": "completed",
+    "created_at": "2026-03-03T10:25:00Z",
+    "updated_at": "2026-03-03T10:26:30Z"
+  }
+]
+```
+
+## See Also
+
+- [POST /analyze](/api/analyze) - Submit Jenkins job for analysis
+- [POST /analyze-failures](/api/analyze-failures) - Analyze raw failures
+- [GET /dashboard](/api/health#dashboard) - View dashboard UI
