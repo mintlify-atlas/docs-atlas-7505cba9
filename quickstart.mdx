@@ -80,7 +80,7 @@ Get Jenkins Job Insight running and analyze your first failed build in minutes.
     curl http://localhost:8000/health
     ```
     
-    You should receive a `{"status": "ok"}` response.
+    You should receive a `{"status": "healthy"}` response.
   </Step>
 </Steps>
 
@@ -248,15 +248,15 @@ print(result["enriched_xml"])  # Enriched XML with analysis
     Learn about Docker Compose, environment variables, and advanced configuration
   </Card>
   
-  <Card title="API reference" icon="code" href="/api-reference">
+  <Card title="API reference" icon="code" href="/api/analyze">
     Explore all available endpoints and request options
   </Card>
   
-  <Card title="Jira integration" icon="ticket" href="/jira-integration">
+  <Card title="Jira integration" icon="ticket" href="/configuration/jira-integration">
     Set up Jira bug search to avoid duplicate reports
   </Card>
   
-  <Card title="pytest plugin" icon="flask" href="/pytest-integration">
+  <Card title="pytest plugin" icon="flask" href="/guides/pytest-integration">
     Enrich JUnit XML reports with AI analysis automatically
   </Card>
 </CardGroup>
