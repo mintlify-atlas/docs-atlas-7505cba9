@@ -1,0 +1,93 @@
+{
+  "projectType": "api-service",
+  "projectName": "Jenkins Job Insight",
+  "projectDescription": "AI-powered webhook service that analyzes Jenkins test failures and classifies them as code issues or product bugs",
+  "theme": "aspen",
+  "primaryColor": "#1E88E5",
+  "lightColor": "#64B5F6",
+  "darkColor": "#0D47A1",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "docker-setup"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/ai-providers",
+              "configuration/jira-integration",
+              "configuration/custom-prompts"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/analysis-modes",
+              "guides/pytest-integration",
+              "guides/html-reports",
+              "guides/adding-ai-providers"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/failure-deduplication",
+              "architecture/cli-based-ai"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/analyze",
+              "api/analyze-failures",
+              "api/results",
+              "api/health"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "api/models/requests",
+              "api/models/responses"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered failure classification (code issues vs product bugs)",
+    "Multiple AI provider support (Claude, Gemini, Cursor)",
+    "Async and sync analysis modes",
+    "Jira integration with AI-powered relevance filtering",
+    "HTML report generation with dark theme",
+    "JUnit XML enrichment for pytest integration",
+    "SQLite result storage and retrieval",
+    "Webhook callbacks for async results"
+  ],
+  "publicApiSurface": [
+    "POST /analyze - Submit Jenkins job for analysis",
+    "POST /analyze?sync=true - Submit and wait for results",
+    "POST /analyze-failures - Analyze raw test failures",
+    "GET /results/{job_id} - Retrieve analysis results (JSON)",
+    "GET /results/{job_id}.html - Retrieve HTML report",
+    "GET /results - List recent analysis jobs",
+    "GET /dashboard - View HTML dashboard",
+    "GET /health - Health check endpoint"
+  ]
+}
